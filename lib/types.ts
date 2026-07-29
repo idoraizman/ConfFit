@@ -108,6 +108,8 @@ export interface ConferenceProfile {
    */
   source: 'seed' | 'cache' | 'ingested' | 'provided'
   source_url: string | null
+  /** Names a source that has no URL, e.g. the files the author uploaded. */
+  source_note?: string | null
   updated_at: string
 }
 
@@ -223,7 +225,16 @@ export interface Route {
   notes: string | null
 }
 
-/** Persisted while we wait for the user to approve ingesting a new venue. */
+/**
+ * Persisted while we wait for the author at one of the two gates.
+ *
+ * `source` — ConfFit has no rules for the venue and is waiting to be given a
+ * link, files, or pasted text. Nothing has been read.
+ * `save` — the rules have been read and used for this run, and ConfFit is
+ * waiting to be told whether to keep them. Nothing has been written: the
+ * extracted profile and its source text live here until the author says yes,
+ * which is what makes that answer cost no model calls.
+ */
 export interface PendingApproval {
   session_id: string
   venue: string
@@ -233,6 +244,12 @@ export interface PendingApproval {
   original_prompt: string
   task: Task
   created_at: string
+  /** Absent on rows written before the save gate existed; treated as "source". */
+  kind?: 'source' | 'save'
+  /** Only on a `save` row: what would be written if the author agrees. */
+  profile?: ConferenceProfile
+  /** Only on a `save` row: the venue text to index for retrieval. */
+  source_text?: string
 }
 
 export interface RunUsage {
@@ -241,3 +258,5 @@ export interface RunUsage {
   completion_tokens: number
   embedding_calls: number
 }
+
+

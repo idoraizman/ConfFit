@@ -6,11 +6,19 @@ import { MODULES } from '../modules'
 import { resolveVenue } from '../seed/venues'
 import { getStore } from '../store'
 import { Tracer } from '../trace'
-import type { ExecuteResult, FormatReport, FramingReport, Route, Task } from '../types'
+import type {
+  ConferenceProfile,
+  ExecuteResult,
+  FormatReport,
+  FramingReport,
+  PendingApproval,
+  Route,
+  Task,
+} from '../types'
 import { runFormatComplianceAgent } from './format'
 import { runFramingAgent } from './framing'
 import { runUnifiedFixer } from './fixer'
-import { runConferenceProfiler } from './profiler'
+import { runConferenceProfiler, saveApprovedProfile } from './profiler'
 
 /**
  * Supervisor — the thin coordinator.
@@ -41,6 +49,8 @@ Be concrete and quantitative. Do not repeat the reports verbatim — they are pr
 
 const APPROVAL_RE = /^\s*(y|yes|yep|yeah|ok|okay|sure|go ahead|approved?|do it|please do|confirm(ed)?)\b[\s.!]*$/i
 const URL_ONLY_RE = /^\s*(https?:\/\/\S+)\s*$/i
+/** A refusal at the save gate: use the rules for this run, remember nothing. */
+const DECLINE_RE = /^\s*(n|no|nope|nah|don'?t|do not|discard|skip|not now|no thanks?)\b[\s.!]*$/i
 /** An explicit label the author can put in front of pasted submission rules. */
 const GUIDELINES_FIELD = /^[ \t]*(guidelines?|author\s+instructions?|rules?|cfp|call[\s-]for[\s-]papers?)\s*:/im
 /** Vocabulary that separates pasted submission rules from a pasted manuscript. */
@@ -55,8 +65,18 @@ const RULE_WORDS = [
 
 /** A line naming the target venue — the mark of a fresh request, not a reply. */
 const VENUE_LINE = /^\s*(target\s+)?(conference|venue)\s*:/im
-/** Headings that make a paste a manuscript rather than a set of rules. */
-const MANUSCRIPT_SHAPE = [/^\s*abstract\b/im, /^\s*(references|bibliography)\b/im]
+/**
+ * Headings that make a paste a manuscript rather than a set of rules.
+ *
+ * Heading-shaped, not merely word-initial: guidelines wrap mid-sentence, and a
+ * line that happens to begin "references to your own prior work" is not a
+ * reference list. Matching prose here silently routed a set of pasted rules as a
+ * new manuscript.
+ */
+const MANUSCRIPT_SHAPE = [
+  /^\s*(\\begin\{abstract\}|(\d+\.?\s*)?abstract\s*$)/im,
+  /^\s*(\d+\.?\s*)?(references|bibliography)\s*$/im,
+]
 
 /**
  * Recognises a reply that *is* the venue's guidelines rather than a new request.
@@ -82,13 +102,33 @@ function pastedGuidelines(prompt: string): string | null {
   return hits >= 3 ? text : null
 }
 
-export async function execute(rawPrompt: string, sessionId: string): Promise<ExecuteResult> {
+/** Guidelines the author attached to this request, already extracted to text. */
+export interface AttachedGuidelines {
+  text: string
+  /** Human-readable provenance, e.g. "2 uploaded files: cfp.pdf, format.pdf". */
+  label: string
+  /** Files that could not be read, reported rather than silently ignored. */
+  problems: string[]
+}
+
+export async function execute(
+  rawPrompt: string,
+  sessionId: string,
+  attached?: AttachedGuidelines,
+): Promise<ExecuteResult> {
   const tracer = new Tracer()
   const store = getStore()
 
   const prompt = (rawPrompt ?? '').trim()
-  if (!prompt) {
-    return { status: 'error', error: 'The "prompt" field is required and must be a non-empty string.', response: null, steps: [] }
+  // Attaching the guidelines and pressing send is a complete request on its own.
+  if (!prompt && !attached?.text.trim()) {
+    const problems = attached?.problems.length ? ` ${attached.problems.join(' ')}` : ''
+    return {
+      status: 'error',
+      error: `The "prompt" field is required and must be a non-empty string, unless you attach a readable guidelines file.${problems}`,
+      response: null,
+      steps: [],
+    }
   }
   if (prompt.length > config.limits.maxPromptChars) {
     return {
@@ -99,8 +139,26 @@ export async function execute(rawPrompt: string, sessionId: string): Promise<Exe
     }
   }
 
+  // Attachments that yielded no text are reported as such. Falling through to
+  // normal routing would answer a failed upload with an unrelated complaint
+  // about the missing venue.
+  if (attached && !attached.text.trim()) {
+    return {
+      status: 'ok',
+      response: [
+        'I could not read the guidelines you attached.',
+        '',
+        ...attached.problems.map((p) => `- ${p}`),
+        '',
+        'Attach a text-based PDF or a text file, paste a link to the author-instructions page, or paste the rules in as text.',
+      ].join('\n'),
+      error: null,
+      steps: [],
+    }
+  }
+
   try {
-    return await run(tracer, store, prompt, sessionId)
+    return await run(tracer, store, prompt, sessionId, attached)
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     console.error('[execute] failed:', e)
@@ -113,22 +171,41 @@ async function run(
   store: ReturnType<typeof getStore>,
   prompt: string,
   sessionId: string,
+  attached?: AttachedGuidelines,
 ): Promise<ExecuteResult> {
   const parsed = parsePrompt(prompt)
+
+  // ── Save gate ──────────────────────────────────────────────────────────────
+  // A yes/no about keeping rules ConfFit has already read and shown. Answered in
+  // code: the profile is parked in the pending row, so this costs no model call
+  // and cannot come back different from what the author saw.
+  const decision = APPROVAL_RE.test(prompt) ? 'save' : DECLINE_RE.test(prompt) ? 'discard' : null
+  if (decision && !attached?.text.trim()) {
+    const waiting = await store.findPending(sessionId, null)
+    if (waiting?.kind === 'save' && waiting.profile) {
+      return answerSaveGate(tracer, store, sessionId, waiting, decision)
+    }
+  }
 
   // ── Route ──────────────────────────────────────────────────────────────────
   // A bare approval needs no model call: the architecture's own trace for this
   // turn starts at ConferenceProfiler.
   const bareApproval = APPROVAL_RE.test(prompt) || URL_ONLY_RE.test(prompt)
-  // A long paste is only guidelines if the gate is actually waiting for them.
-  const guidelines = bareApproval ? null : pastedGuidelines(prompt)
-  const answeringGate = bareApproval || (guidelines !== null && (await store.findPending(sessionId, null)) !== null)
+  // An attached file needs no heuristic: choosing it in the gate's own cell says
+  // what it is. Bare pasted text is the ambiguous case, and only counts as
+  // guidelines when a gate is actually waiting for them.
+  const attachedText = attached?.text.trim() ? attached.text : null
+  const guidelines = attachedText ?? (bareApproval ? null : pastedGuidelines(prompt))
+  const answeringGate =
+    bareApproval || Boolean(attachedText) || (guidelines !== null && (await store.findPending(sessionId, null)) !== null)
   let route: Route
   let providedGuidelines: string | null = null
+  let providedLabel: string | null = null
 
   if (answeringGate) {
     const url = prompt.match(URL_ONLY_RE)?.[1] ?? null
-    providedGuidelines = bareApproval ? null : guidelines
+    providedGuidelines = attachedText ?? (bareApproval ? null : guidelines)
+    providedLabel = attachedText ? (attached?.label ?? null) : providedGuidelines ? 'pasted by the author' : null
     route = { target_conference: null, task: 'both', is_approval_reply: true, provided_url: url, notes: null }
     tracer.addDeterministic(
       MODULES.SUPERVISOR,
@@ -141,6 +218,8 @@ async function run(
         is_approval_reply: true,
         provided_url: url,
         provided_guidelines_chars: providedGuidelines?.length ?? 0,
+        provided_guidelines_source: providedLabel,
+        unreadable_files: attached?.problems ?? [],
         dispatch: [MODULES.PROFILER],
       },
     )
@@ -237,6 +316,7 @@ async function run(
     isApprovalReply: route.is_approval_reply,
     providedUrl: route.provided_url,
     providedGuidelines,
+    providedGuidelinesLabel: providedLabel,
     originalPrompt: prompt,
     task,
   })
@@ -303,6 +383,8 @@ async function run(
     applied: fixed.applied,
     skipped: fixed.skipped,
     usage: tracer.usage.snapshot(),
+    saveOffer: profiled.offerToSave ?? null,
+    fileProblems: attached?.problems ?? [],
   })
 
   await store.recordRun({
@@ -313,6 +395,91 @@ async function run(
   })
 
   return { status: 'ok', response, error: null, steps: tracer.steps }
+}
+
+/**
+ * Answers "shall I remember these rules?" — the second gate.
+ *
+ * Entirely deterministic: the profile the author just read about is parked in the
+ * pending row, so saving it writes exactly what was shown, and declining leaves
+ * the knowledge base as it was. Either way this turn spends nothing.
+ */
+async function answerSaveGate(
+  tracer: Tracer,
+  store: ReturnType<typeof getStore>,
+  sessionId: string,
+  waiting: PendingApproval,
+  decision: 'save' | 'discard',
+): Promise<ExecuteResult> {
+  const profile = waiting.profile as ConferenceProfile
+  const source = profile.source_url ?? profile.source_note ?? 'the source you sent'
+  let indexed = 0
+
+  if (decision === 'save') {
+    ;({ indexed } = await saveApprovedProfile(store, profile, waiting.source_text ?? ''))
+  }
+  await store.clearPending(sessionId, waiting.venue_id)
+
+  tracer.addDeterministic(
+    MODULES.PROFILER,
+    {
+      system:
+        'The author answered the save gate. Writing to the knowledge base happens here and nowhere else, using the profile they were shown.',
+      user: `${decision === 'save' ? 'Save' : 'Discard'} the profile for ${profile.venue} (venue_id=${profile.venue_id}).`,
+    },
+    {
+      gate: 'save',
+      decision,
+      wrote_to_knowledge_base: decision === 'save',
+      venue: profile.venue,
+      venue_id: profile.venue_id,
+      indexed_passages: indexed,
+      source,
+      profile: decision === 'save' ? profile : undefined,
+    },
+  )
+
+  const rules = describeRules(profile)
+  const response =
+    decision === 'save'
+      ? [
+          `# Saved — ${profile.venue}`,
+          '',
+          `**${profile.venue}** is now in the knowledge base, read from ${source}${
+            indexed ? ` and indexed as ${indexed} passage${indexed === 1 ? '' : 's'}` : ''
+          }.`,
+          '',
+          rules,
+          '',
+          `The next run for this venue costs no profiler calls and no fetching. Send a different paper with \`Target conference: ${profile.venue}\` and it goes straight to the workers.`,
+          '',
+          `Wrong later? Send the corrected guidelines for ${profile.venue} and they replace these.`,
+        ].join('\n')
+      : [
+          `# Not saved — ${profile.venue}`,
+          '',
+          `Nothing was written. The rules from ${source} were used for that one run only, and the knowledge base is exactly as it was.`,
+          '',
+          `If you send another paper for **${profile.venue}**, I will ask for the guidelines again.`,
+        ].join('\n')
+
+  return { status: 'ok', response, error: null, steps: tracer.steps }
+}
+
+/** The rules as a short list, so a save decision is made on visible facts. */
+function describeRules(profile: ConferenceProfile): string {
+  const r = profile.format_rules
+  const bits: string[] = []
+  if (r.page_limit !== null) {
+    bits.push(`- Page limit: ${r.page_limit}${r.references_in_limit === false ? ' (references excluded)' : ''}`)
+  }
+  if (r.anonymous !== null) bits.push(`- Review: ${r.anonymous ? 'double-blind, anonymised submission' : 'not anonymous'}`)
+  if (r.abstract_word_limit !== null) bits.push(`- Abstract limit: ${r.abstract_word_limit} words`)
+  if (r.citation_style !== 'unknown') bits.push(`- Citations: ${r.citation_style}`)
+  if (r.template) bits.push(`- Template: ${r.template}`)
+  if (r.required_sections.length) bits.push(`- Required sections: ${r.required_sections.join(', ')}`)
+  if (r.unresolved.length) bits.push(`- Still unknown: ${r.unresolved.slice(0, 3).join('; ')}`)
+  return bits.length ? `**What is stored**\n${bits.join('\n')}` : '_The profile records no testable rule._'
 }
 
 // ─── Response rendering (deterministic, no tokens) ───────────────────────────
@@ -330,8 +497,15 @@ function renderResponse(a: {
   applied: string[]
   skipped: string[]
   usage: { llm_calls: number; prompt_tokens: number; completion_tokens: number }
+  /** Present when rules were just read from the author's source and not stored. */
+  saveOffer: { venue: string; source: string } | null
+  fileProblems: string[]
 }): string {
   const out: string[] = [`# ConfFit — ${a.venue}`, '', a.summary, '', a.profileNote]
+
+  if (a.fileProblems.length) {
+    out.push('', `⚠️ **Some attachments could not be read.** ${a.fileProblems.join(' ')}`)
+  }
 
   if (a.structureRecovered) {
     out.push(
@@ -411,6 +585,24 @@ function renderResponse(a: {
   }
   out.push('```text', a.fixed, '```')
 
+  /*
+   * The save gate goes last, after the reports. Asking before the author can see
+   * what the rules produced would be asking them to vouch for a document they
+   * have not read the consequences of.
+   */
+  if (a.saveOffer) {
+    out.push(
+      '',
+      '---',
+      '',
+      `## Add ${a.saveOffer.venue} to the knowledge base?`,
+      '',
+      `These rules came from ${a.saveOffer.source} and were used for this run only — **nothing has been written to the knowledge base.**`,
+      '',
+      `Reply **yes** to store them, so the next paper for ${a.saveOffer.venue} skips the profiler entirely and costs no fetching. Reply **no** to keep this run one-off; I will ask again next time.`,
+    )
+  }
+
   out.push(
     '',
     '---',
@@ -428,15 +620,15 @@ function cell(s: string): string {
   return s.replace(/\|/g, '\\|').replace(/\n+/g, ' ')
 }
 
-function profileNote(p: { source: string; source_url: string | null; venue: string; updated_at: string }): string {
+function profileNote(p: ConferenceProfile): string {
   if (p.source === 'seed') {
     return `_Venue profile: built-in baseline for the ${p.venue} family (as of ${p.updated_at}). Confirm the current rules at ${p.source_url ?? 'the venue site'} before submitting._`
   }
   if (p.source === 'ingested') {
-    return `_Venue profile: read from ${p.source_url ?? 'the call-for-papers'} and cached for future runs._`
+    return `_Venue profile: read from ${p.source_url ?? 'the call-for-papers'}._`
   }
   if (p.source === 'provided') {
-    return `_Venue profile: built from the guidelines you pasted — nothing was fetched from the web — and cached for future runs on ${p.venue}._`
+    return `_Venue profile: built from the guidelines you provided (${p.source_note ?? 'pasted text'}) — nothing was fetched from the web._`
   }
   return `_Venue profile: from the knowledge base${p.source_url ? ` (source: ${p.source_url})` : ''}._`
 }

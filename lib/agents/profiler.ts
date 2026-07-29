@@ -9,6 +9,7 @@ import {
   type ResolvedVenue,
 } from '../seed/venues'
 import type { Store } from '../store'
+import { selectRulePassages } from '../guidelines'
 import { chunk, search, upsertChunks, vectorBackend } from '../store/vector'
 import { callTool } from '../tools'
 import type { Tracer } from '../trace'
@@ -39,12 +40,25 @@ export interface ProfilerInput {
    * rules are in a PDF, behind a login, or simply not findable.
    */
   providedGuidelines: string | null
+  /** How to describe that source in the answer, e.g. "2 uploaded files: a.pdf, b.pdf". */
+  providedGuidelinesLabel: string | null
   originalPrompt: string
   task: Task
 }
 
 export type ProfilerOutput =
-  | { kind: 'profile'; profile: ConferenceProfile; grounding: string[] }
+  | {
+      kind: 'profile'
+      profile: ConferenceProfile
+      grounding: string[]
+      /**
+       * Set when the profile was just read out of a source the author supplied
+       * and is being used for this run only. The Supervisor turns it into the
+       * save gate at the end of the answer: the rules are visible in the report
+       * above it, so the author decides to keep them knowing what they say.
+       */
+      offerToSave?: { venue: string; source: string }
+    }
   | { kind: 'ask_user'; question: string }
   | { kind: 'declined'; message: string }
 
@@ -97,12 +111,13 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
       if (!attempt.profile) {
         return {
           kind: 'declined',
-          message: `I could not read submission rules out of that text. Paste the part of the venue's author instructions that states the page limit, anonymity policy, template and citation style — **${pending.venue}** is still waiting.`,
+          message:
+            attempt.reason === 'no_rules'
+              ? `I read what you sent, but it states no submission rules — no page limit, anonymity policy, template or citation style — so there is nothing for me to check your paper against. Send the part of the author instructions that states them; **${pending.venue}** is still waiting.`
+              : `I could not read usable text out of what you sent. If it was a scanned PDF there is no text layer to read; paste the rules in as text instead. **${pending.venue}** is still waiting.`,
         }
       }
-      await store.clearPending(sessionId, pending.venue_id)
-      const grounding = await ground(attempt.profile, input.topic)
-      return { kind: 'profile', profile: attempt.profile, grounding }
+      return finishWithSaveGate(input, pending, attempt.profile, attempt.sourceText)
     }
 
     const url = input.providedUrl ?? pending.proposed_url
@@ -134,9 +149,7 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
         ].join('\n'),
       }
     }
-    await store.clearPending(sessionId, pending.venue_id)
-    const grounding = await ground(attempt.profile, input.topic)
-    return { kind: 'profile', profile: attempt.profile, grounding }
+    return finishWithSaveGate(input, pending, attempt.profile, attempt.sourceText)
   }
 
   // ── Cache check — no LLM ───────────────────────────────────────────────────
@@ -190,30 +203,20 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
     return { kind: 'profile', profile: seeded, grounding }
   }
 
-  // ── Cache miss on an unknown venue: ask before ingesting anything ──────────
-  // Only a URL the user gave as the target conference counts as a proposal.
-  let proposed = input.providedUrl ?? guessCfpUrl(resolved, input.venueRaw)
-  let searchNote: string | null = null
-  let searchEngine: string | null = null
-  let alternatives: { title: string; url: string }[] = []
-  let unrelated: { title: string; url: string }[] = []
-  if (!proposed) {
-    const hits = await Promise.all(QUERY_FORMS.map((form) => callTool('web_search', { query: form(resolved.display) })))
-    const tokens = venueTokens(resolved.display)
-    const candidates = rankCandidates(mergeHits(hits), tokens)
-    const plausible = candidates.filter((c) => looksLikeVenuePage(c, tokens))
-    proposed = plausible[0]?.url ?? null
-    alternatives = plausible.slice(1, 4)
-    // Kept only to show the author what the search actually turned up when none
-    // of it was worth proposing.
-    unrelated = plausible.length ? [] : candidates.slice(0, 3)
-    searchNote = candidates.length
-      ? candidates.map((c, i) => `${i + 1}. ${c.title} — ${c.url}`).join('\n')
-      : hits.map((h) => h.content).join(' | ')
-    searchEngine = [...new Set(hits.flatMap((h) => String(h.meta?.engine ?? '').split('+')))].filter(Boolean).join('+') || null
-  }
+  // ── Cache miss: ask the author for the source. Never go looking ────────────
+  /*
+   * ConfFit used to search the web here and offer what it found. Measured
+   * against the deployed server, that is not a capability: the only search
+   * engine reachable from Vercel answered "SIGGRAPH 2027 author guidelines" with
+   * genealogy forums and a supermarket, and on a better day it offered the
+   * parent conference's rules for a sub-conference — plausible, authoritative
+   * looking, and wrong. A wrong page produces a confident profile, so the
+   * cheapest correct move is to ask the one person who knows which document
+   * governs their submission.
+   */
+  const proposed = input.providedUrl ?? guessCfpUrl(resolved, input.venueRaw)
 
-  const pending: PendingApproval = {
+  await store.putPending({
     session_id: sessionId,
     venue: resolved.display,
     venue_id: resolved.venue_id,
@@ -221,200 +224,48 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
     original_prompt: input.originalPrompt,
     task: input.task,
     created_at: new Date().toISOString(),
-  }
-  await store.putPending(pending)
+    kind: 'source',
+  })
 
-  const altBlock = alternatives.length
-    ? `Other candidates I found, if that one is wrong:\n${alternatives.map((a) => `- ${a.url}`).join('\n')}`
-    : ''
-
-  const question = proposed
-    ? [
-        `I don't have guidelines for **${resolved.display}** in the knowledge base yet.`,
-        '',
-        `May I fetch ${proposed} and add it?`,
-        '',
-        altBlock,
-        '',
-        '**Reply in the box below this answer**, one of:',
-        '- `yes` — fetch that page and add it',
-        "- a different link to the venue's call-for-papers or author instructions",
-        '- the guidelines text itself, pasted in — I will use that verbatim and fetch nothing',
-        '',
-        'Nothing has been written to the knowledge base.',
-      ]
-        .filter((l, i, all) => l !== '' || all[i - 1] !== '')
-        .join('\n')
-    : [
-        `I don't have guidelines for **${resolved.display}** in the knowledge base, and I could not find a Call-for-Papers page for it.`,
-        '',
-        // Naming the reason matters: "I found nothing" and "I could not search"
-        // point the author at completely different next steps.
-        searchEngine
-          ? `My web search ran (via ${searchEngine}) and returned nothing that looks like a venue page, so either the venue is not indexed under that name or the ${
-              resolved.year ?? 'next'
-            } edition has not been announced yet.`
-          : 'My web search could not reach any search engine from the server, so this is not evidence that the venue does not exist.',
-        unrelated.length
-          ? `\nNone of the hits I got looks like a submission-rules page, so I will not read any of them uninvited. For the record, they were:\n${unrelated
-              .map((u) => `- ${u.title || u.url} — ${u.url}`)
-              .join('\n')}\n\nIf one of them is in fact the venue, paste its link and I will read it.`
-          : '',
-        '',
-        '**Reply in the box below this answer** with either:',
-        "- a direct link to the venue's call-for-papers or author-instructions page (an HTML page — PDFs cannot be fetched), or",
-        '- the guidelines themselves, pasted in — page limit, anonymity, template, citation style. This is the reliable route: I use the text verbatim and fetch nothing.',
-        '',
-        `If ${resolved.display} is not a real venue, send a new request with a different target conference instead.`,
-        '',
-        'Nothing has been written to the knowledge base.',
-      ].join('\n')
+  const question = [
+    `I don't have guidelines for **${resolved.display}** in the knowledge base, and I do not go looking for them on the web — a page I picked myself could be the wrong venue, the wrong year or the wrong track, and you would get confident rules from it either way.`,
+    '',
+    `**Send me the source in the box below** — any one of:`,
+    '',
+    ...[
+      proposed ? `- \`yes\` — read ${proposed}, the link you gave with the venue` : '',
+      proposed
+        ? "- a different link to the venue's call-for-papers or author-instructions page"
+        : "- a link to the venue's call-for-papers or author-instructions page (HTML or PDF)",
+      '- **attach the guidelines** — PDF or text, several files if the rules are split across them',
+      '- paste the rules straight in as text',
+    ].filter(Boolean),
+    '',
+    'Nothing has been written to the knowledge base, and nothing will be until you have seen what I read out of the source.',
+  ]
+    .filter((line, i, all) => line !== '' || all[i - 1] !== '')
+    .join('\n')
 
   tracer.addDeterministic(
     MODULES.PROFILER,
     {
       system:
-        'Check the cache. On a miss, do not ingest — propose a source and return a confirmation request for the user.',
+        'Check the cache. On a miss, ask the author for the guidelines — a link, files, or pasted text. Never search for a source and never ingest one that was not given.',
       user: `Profile ${resolved.display} (venue_id=${resolved.venue_id}).`,
     },
     {
       cache_hit: false,
       wrote_to_knowledge_base: false,
+      searched_the_web: false,
       venue: resolved.display,
       proposed_url: proposed,
-      search_engine: searchEngine,
-      web_search: searchNote,
+      gate: 'source',
       awaiting_reply: true,
       ask_user: question,
     },
   )
 
   return { kind: 'ask_user', question }
-}
-
-/**
- * Orders search hits by how likely they are to be readable submission rules.
- *
- * Two things decide it: `web_fetch` refuses PDFs, so a PDF can never be the
- * proposal however good a match it is, and the concrete rules live on the author
- * guide rather than on the topic-and-dates call-for-papers.
- */
-const GUIDE_WORDS = /author|instruction|guide|format|submission|camera.?ready|call.?for.?paper|cfp/i
-const VENUE_WORDS = /conference|symposium|workshop|proceedings|openreview|acm\b|ieee|springer|usenix/i
-const AGGREGATORS = /wikicfp|github|reddit|zhihu|baidu|quora|x\.com|twitter|facebook|linkedin|medium\.com|wikipedia/i
-/**
- * Catalogues that list thousands of venues. They rank well for a venue's name
- * and never state its submission rules, so they are listed for the author but
- * never proposed — from a datacenter these are much of what Bing returns.
- */
-const VENUE_INDEXES =
-  /dl\.acm\.org|ieeexplore|link\.springer|dblp|semanticscholar|researchgate|academia\.edu|conference-schedule|paperpilot|deadlines?\b|guide2research|core\.edu\.au/i
-/** Side tracks whose rules are not the ones a full paper is submitted under. */
-const SIDE_TRACKS = /art.?paper|art.?gallery|poster|course|doctoral|consortium|demo|panel|keynote|showcase|festival/i
-
-/**
- * Both phrasings are issued, because neither wins on both engines. The terse
- * form is what surfaces a sub-conference on DuckDuckGo — `asia.siggraph.org`
- * rather than the parent's guidelines — while the keyword-heavy form is what gets
- * Bing past the venue's homepage to its author-instructions page, and Bing is
- * the engine that answers from a datacenter. Queries cost no tokens, so we take
- * the union and let the ranker decide.
- */
-const QUERY_FORMS: ((venue: string) => string)[] = [
-  (v) => `${v} author guidelines paper submission`,
-  (v) => `${v} author guide formatting instructions page limit anonymous submission`,
-]
-
-/** Round-robin union of several searches, keeping each result's best rank. */
-function mergeHits(hits: { meta?: Record<string, unknown> }[]): { title: string; url: string }[] {
-  const lists = hits.map((h) => (h.meta?.results as { title: string; url: string }[] | undefined) ?? [])
-  const merged: { title: string; url: string }[] = []
-  const seen = new Set<string>()
-  for (let rank = 0; ; rank++) {
-    if (lists.every((l) => rank >= l.length)) break
-    for (const list of lists) {
-      const hit = list[rank]
-      if (!hit || seen.has(hit.url)) continue
-      seen.add(hit.url)
-      merged.push(hit)
-    }
-  }
-  return merged
-}
-
-function rankCandidates(
-  results: { title: string; url: string }[],
-  tokens: string[],
-): { title: string; url: string }[] {
-  return results
-    .filter((r) => !/\.pdf($|[?#])/i.test(r.url))
-    .map((r, i) => {
-      const target = `${r.url} ${r.title}`
-      const score =
-        (AGGREGATORS.test(r.url) ? 4 : 0) + (GUIDE_WORDS.test(target) ? 0 : 2) + (SIDE_TRACKS.test(target) ? 1 : 0)
-      return { r, coverage: nameCoverage(r, tokens), score, i }
-    })
-    // Name coverage outranks everything: for SIGGRAPH Asia, the parent
-    // conference's own author-instructions page is a better-looking document and
-    // the wrong venue.
-    .sort((a, b) => b.coverage - a.coverage || a.score - b.score || a.i - b.i)
-    .map((x) => x.r)
-}
-
-/** Words that carry no identity — every venue is an international conference. */
-const NAME_NOISE = new Set([
-  'the', 'and', 'for', 'of', 'on', 'in', 'at',
-  'conference', 'conf', 'symposium', 'workshop', 'congress', 'meeting', 'proceedings',
-  'international', 'annual', 'joint', 'acm', 'ieee', 'association', 'society',
-])
-
-/** The distinctive words of a venue name: "siggraph", "asia" — not "conference". */
-function venueTokens(display: string): string[] {
-  const words = display.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) ?? []
-  return [...new Set(words)].filter((w) => !NAME_NOISE.has(w))
-}
-
-/** True for `https://www.siggraph.org/`, false for `…/author-instructions/`. */
-function isLandingPage(url: string): boolean {
-  try {
-    const { pathname, search } = new URL(url)
-    return !search && pathname.replace(/\/+$/, '') === ''
-  } catch {
-    return false
-  }
-}
-
-/** Fraction of the venue's distinctive words this hit actually mentions. */
-function nameCoverage(r: { title: string; url: string }, tokens: string[]): number {
-  if (!tokens.length) return 1
-  const target = `${r.url} ${r.title}`.toLowerCase()
-  return tokens.filter((t) => target.includes(t)).length / tokens.length
-}
-
-/**
- * Could this hit plausibly be an academic venue's own page?
- *
- * A search for a venue that does not exist still returns six confident results —
- * for "Zephyr Symposium 2031", a kitchen-appliance shop; Bing has offered pizza
- * delivery for a Eurographics query. Asking the author to approve reading that
- * wastes their turn and makes the gate look credulous.
- *
- * Two independent tests, both cheap. The hit must name most of what makes the
- * venue that venue — so `siggraph.org` cannot stand in for SIGGRAPH *Asia* — and
- * it must carry submission-guide or venue vocabulary, or an edition year in the
- * URL (`s2026.siggraph.org`, `sigbovik.org/2025/`), which a shopfront rarely has.
- */
-function looksLikeVenuePage(r: { title: string; url: string }, tokens: string[]): boolean {
-  const target = `${r.url} ${r.title}`
-  if (nameCoverage(r, tokens) < 2 / 3) return false
-  if (VENUE_INDEXES.test(r.url) || AGGREGATORS.test(r.url)) return false
-  // A bare landing page cannot hold submission rules, and proposing one costs
-  // the author a round trip to find that out. Bing from a datacenter returns
-  // little else, so this is the common production case, not an edge case.
-  if (isLandingPage(r.url) && !GUIDE_WORDS.test(target)) return false
-  // No \b before the year: the commonest conference host glues it to letters
-  // (`s2026.siggraph.org`, `cvpr2027.thecvf.com`), where \b never matches.
-  return GUIDE_WORDS.test(target) || VENUE_WORDS.test(target) || /(?<!\d)20\d{2}(?!\d)/.test(r.url)
 }
 
 /**
@@ -428,6 +279,69 @@ function withLinks(result: { content: string; meta?: Record<string, unknown> }):
   return links.length
     ? `${result.content}\n\n[Links on this page that may hold the submission rules: ${links.join(', ')}]`
     : result.content
+}
+
+/**
+ * Replaces the answered source gate with the save gate.
+ *
+ * The extracted profile and its text are parked in the pending row, so agreeing
+ * to keep them later costs no fetch, no model call and no risk of a different
+ * answer the second time.
+ */
+async function finishWithSaveGate(
+  input: ProfilerInput,
+  pending: PendingApproval,
+  profile: ConferenceProfile,
+  sourceText: string,
+): Promise<ProfilerOutput> {
+  const { store, sessionId } = input
+  await store.putPending({
+    ...pending,
+    kind: 'save',
+    profile,
+    source_text: sourceText.slice(0, config.limits.maxCfpChars),
+    created_at: new Date().toISOString(),
+  })
+  const grounding = await ground(profile, input.topic)
+  return {
+    kind: 'profile',
+    profile,
+    grounding,
+    offerToSave: { venue: profile.venue, source: profile.source_url ?? profile.source_note ?? 'the source you sent' },
+  }
+}
+
+/**
+ * The only place a run writes venue knowledge — reached solely by the author
+ * answering the save gate.
+ *
+ * Both halves happen together: the profile row that turns the next run into a
+ * cache hit, and the passages that make rules_lookup and framing grounding work
+ * for this venue. Indexing is best-effort; a profile without its passages is
+ * still worth having, while passages without the profile would be invisible.
+ */
+export async function saveApprovedProfile(
+  store: Store,
+  profile: ConferenceProfile,
+  sourceText: string,
+): Promise<{ indexed: number }> {
+  let indexed = 0
+  try {
+    const chunks = chunk(sourceText.slice(0, config.limits.maxCfpChars))
+    indexed = await upsertChunks(
+      profile.venue_id,
+      chunks.map((text, i) => ({
+        id: `${profile.venue_id}-cfp-${i}`,
+        text,
+        kind: 'cfp' as const,
+        source: profile.source_url ?? profile.source_note ?? 'provided by the author',
+      })),
+    )
+  } catch (e) {
+    console.warn('[profiler] indexing the approved source failed:', (e as Error).message)
+  }
+  await store.putProfile(profile)
+  return { indexed }
 }
 
 /** RAG grounding: retrieve venue passages relevant to this specific paper. */
@@ -467,8 +381,8 @@ async function indexSeed(resolved: ResolvedVenue): Promise<void> {
  * `no_rules` means it was read fine and simply is not the author instructions.
  */
 type ProfileAttempt =
-  | { profile: ConferenceProfile; reason?: undefined }
-  | { profile: null; reason: 'unreadable' | 'no_rules' }
+  | { profile: ConferenceProfile; sourceText: string; reason?: undefined }
+  | { profile: null; sourceText?: undefined; reason: 'unreadable' | 'no_rules' }
 
 /**
  * ReAct ingestion, only ever reached after the user approved it.
@@ -548,21 +462,17 @@ async function synthesiseProfile(
   text: string,
   sourceUrl: string | null,
 ): Promise<ProfileAttempt> {
-  const { tracer, store } = input
+  const { tracer } = input
   const usable = text.trim()
   if (usable.length < 200) return { profile: null, reason: 'unreadable' }
-  const provenance = sourceUrl ?? 'pasted by the author'
+  const provenance = sourceUrl ?? input.providedGuidelinesLabel ?? 'provided by the author'
 
-  // Index the CFP so rules_lookup and framing grounding work next time.
-  try {
-    const chunks = chunk(usable.slice(0, config.limits.maxCfpChars))
-    await upsertChunks(
-      resolved.venue_id,
-      chunks.map((t, i) => ({ id: `${resolved.venue_id}-cfp-${i}`, text: t, kind: 'cfp' as const, source: provenance })),
-    )
-  } catch (e) {
-    console.warn('[profiler] CFP indexing failed:', (e as Error).message)
-  }
+  /*
+   * Nothing is indexed or stored here. The author is asked first, once they can
+   * see what was actually read out of their source — so this function reads and
+   * reasons, and only the save gate writes.
+   */
+  const forSynthesis = selectRulePassages(usable, config.limits.maxCfpChars)
 
   const synth = await tracer.callJson<{
     focus_areas?: string[]
@@ -571,7 +481,7 @@ async function synthesiseProfile(
     format_rules?: Partial<FormatRules>
   }>(MODULES.PROFILER, {
     system: PROFILER_SYSTEM_SYNTH,
-    user: `Venue: ${resolved.display}\nSource: ${provenance}\n\nObservations:\n${usable.slice(0, config.limits.maxCfpChars)}`,
+    user: `Venue: ${resolved.display}\nSource: ${provenance}\n\nObservations:\n${forSynthesis}`,
     // Enough for the full object plus a reasoning model's hidden tokens: a
     // truncated profile would silently lose the rules written last.
     maxTokens: 1600,
@@ -619,6 +529,7 @@ async function synthesiseProfile(
     },
     source: sourceUrl ? 'ingested' : 'provided',
     source_url: sourceUrl,
+    source_note: sourceUrl ? null : (input.providedGuidelinesLabel ?? 'pasted by the author'),
     updated_at: new Date().toISOString(),
   }
 
@@ -630,12 +541,11 @@ async function synthesiseProfile(
    * gate left to correct it. Refusing it keeps the approval open instead.
    */
   if (!statesAnyRule(profile)) {
-    console.warn(`[profiler] ${provenance} stated no submission rules; not caching a profile for ${resolved.venue_id}`)
+    console.warn(`[profiler] ${provenance} stated no submission rules; no profile built for ${resolved.venue_id}`)
     return { profile: null, reason: 'no_rules' }
   }
 
-  await store.putProfile(profile)
-  return { profile }
+  return { profile, sourceText: usable }
 }
 
 /** Did the source actually yield something a format check could test? */
