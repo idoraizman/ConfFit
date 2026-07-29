@@ -15,13 +15,25 @@ import type { ConferenceProfile, FormatRules } from '../types'
  * the format report tells the user to confirm against the current CFP.
  */
 
-export const SEED_AS_OF = '2026-07'
+/**
+ * Version stamp for the built-in baselines. Bump this whenever a seed's facts
+ * change: profiles derived from a seed carry it in `updated_at`, and the
+ * profiler treats any cached seed profile with a different stamp as a miss, so
+ * a correction reaches every venue instead of being masked by the cache.
+ */
+export const SEED_AS_OF = '2026-07-29'
 
 interface VenueSeed {
   family: string
   display: string
   aliases: string[]
   cfp_url: string
+  /**
+   * Author guide / formatting instructions. This is where the concrete rules
+   * actually live — a bare call-for-papers is mostly topics and dates — so it
+   * is the page the profiler prefers to read.
+   */
+  guide_url: string
   focus_areas: string[]
   valued_criteria: string[]
   accepted_paper_emphasis: string[]
@@ -39,6 +51,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
     display: 'ICLR',
     aliases: ['iclr', 'international conference on learning representations'],
     cfp_url: 'https://iclr.cc/Conferences/2026/CallForPapers',
+    guide_url: 'https://iclr.cc/Conferences/2026/AuthorGuide',
     focus_areas: [
       'representation learning',
       'deep learning architectures and optimisation',
@@ -64,15 +77,21 @@ export const VENUE_SEEDS: VenueSeed[] = [
       abstract_word_limit: null,
       anonymous: true,
       citation_style: authorYear,
-      template: 'the official ICLR LaTeX style (iclr_conference.sty, natbib author–year)',
-      required_sections: ['Reproducibility Statement', 'Ethics Statement'],
+      template: 'the official ICLR template (iclr2026.zip → iclr2026_conference.sty + .bst, natbib author–year, single column)',
+      // The 2026 Author Guide calls the Reproducibility Statement "strongly
+      // encouraged" and the Ethics Statement "optional"; neither is mandatory,
+      // so neither may be reported as a failure.
+      required_sections: [],
+      recommended_sections: ['Reproducibility Statement', 'Ethics Statement'],
       unresolved: [],
     },
     corpus: [
-      'ICLR submissions are limited to 9 pages of main text, excluding references and appendices. There is no page limit on the appendix, but reviewers are not obliged to read it.',
-      'ICLR review is double-blind. Submissions must be anonymised: no author names, no affiliations, no acknowledgements, and no links that identify the authors (for example a personal GitHub repository).',
-      'ICLR uses the official LaTeX style file with natbib author–year citations (\\citet and \\citep). Do not modify margins, font size, or spacing.',
-      'ICLR asks authors to include a Reproducibility Statement and an Ethics Statement. Both sit after the conclusion and do not count against the page limit.',
+      'ICLR 2026 submissions are limited to 9 pages of main text. The camera-ready version may use 10 pages. The bibliography does not count toward the page limit, and authors may add as many appendix pages after the bibliography as they wish, though reviewers are not obliged to read them.',
+      'ICLR review is double blind: reviewers cannot see author names and authors cannot see reviewer names. A paper whose author identity is revealed in either the main text or the supplementary material will be desk rejected.',
+      'ICLR requires the official template, distributed as iclr2026.zip from the ICLR Master-Template repository. It provides iclr2026_conference.sty and iclr2026_conference.bst, loads natbib, and is used with \\bibliographystyle{iclr2026_conference}. Citations are author–year via \\citet and \\citep. Do not modify margins, font size or spacing.',
+      'An Ethics Statement is optional at ICLR but encouraged where relevant; it does not count toward the page limit and should not exceed one page. A paragraph-long Reproducibility Statement is strongly encouraged and also does not count toward the page limit.',
+      'If large language models played a significant role in research ideation or writing, ICLR requires the authors to disclose it. The disclosure may appear in the appendix and does not count toward the page limit.',
+      'ICLR does not permit dual submission: papers identical or substantially similar to work previously published or accepted elsewhere are not allowed. Preprints on non-peer-reviewed servers such as arXiv do not violate this policy.',
       'ICLR values contributions to representation learning: new architectures, training objectives, optimisation insights, theory, and empirical studies that explain why methods behave as they do.',
     ],
   },
@@ -81,6 +100,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
     display: 'NeurIPS',
     aliases: ['neurips', 'nips', 'neural information processing systems'],
     cfp_url: 'https://neurips.cc/Conferences/2026/CallForPapers',
+    guide_url: 'https://neurips.cc/Conferences/2026/AuthorGuidelines',
     focus_areas: [
       'machine learning theory and algorithms',
       'deep learning',
@@ -108,6 +128,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       citation_style: authorYear,
       template: 'the official NeurIPS LaTeX style (neurips_2026.sty)',
       required_sections: ['Limitations'],
+      recommended_sections: [],
       unresolved: [],
     },
     corpus: [
@@ -123,6 +144,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
     display: 'ICML',
     aliases: ['icml', 'international conference on machine learning'],
     cfp_url: 'https://icml.cc/Conferences/2026/CallForPapers',
+    guide_url: 'https://icml.cc/Conferences/2026/AuthorInstructions',
     focus_areas: [
       'machine learning algorithms and theory',
       'optimisation',
@@ -149,6 +171,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       citation_style: authorYear,
       template: 'the official ICML LaTeX style (icml2026.sty)',
       required_sections: [],
+      recommended_sections: [],
       unresolved: [],
     },
     corpus: [
@@ -163,6 +186,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
     display: 'ACL',
     aliases: ['acl', 'association for computational linguistics', 'acl rolling review', 'arr'],
     cfp_url: 'https://www.aclweb.org/portal/',
+    guide_url: 'https://acl-org.github.io/ACLPUB/formatting.html',
     focus_areas: [
       'natural language processing',
       'large language models and evaluation',
@@ -189,6 +213,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       citation_style: authorYear,
       template: 'the ACL style files (acl.sty, natbib author–year)',
       required_sections: ['Limitations'],
+      recommended_sections: [],
       unresolved: [],
     },
     corpus: [
@@ -204,6 +229,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
     display: 'EMNLP',
     aliases: ['emnlp', 'empirical methods in natural language processing'],
     cfp_url: 'https://www.aclweb.org/portal/',
+    guide_url: 'https://acl-org.github.io/ACLPUB/formatting.html',
     focus_areas: [
       'empirical NLP methods',
       'language model behaviour and analysis',
@@ -228,6 +254,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       citation_style: authorYear,
       template: 'the ACL style files (acl.sty, natbib author–year)',
       required_sections: ['Limitations'],
+      recommended_sections: [],
       unresolved: [],
     },
     corpus: [
@@ -242,6 +269,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
     display: 'CVPR',
     aliases: ['cvpr', 'computer vision and pattern recognition', 'iccv', 'eccv'],
     cfp_url: 'https://cvpr.thecvf.com/Conferences/2026/AuthorGuidelines',
+    guide_url: 'https://cvpr.thecvf.com/Conferences/2026/AuthorGuidelines',
     focus_areas: [
       'computer vision',
       'visual recognition and detection',
@@ -268,6 +296,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       citation_style: numeric,
       template: 'the official CVPR LaTeX template (cvpr.sty)',
       required_sections: [],
+      recommended_sections: [],
       unresolved: [],
     },
     corpus: [
@@ -282,6 +311,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
     display: 'AAAI',
     aliases: ['aaai', 'association for the advancement of artificial intelligence'],
     cfp_url: 'https://aaai.org/conference/aaai/',
+    guide_url: 'https://aaai.org/authorkit/',
     focus_areas: [
       'artificial intelligence broadly',
       'knowledge representation and reasoning',
@@ -307,6 +337,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       citation_style: authorYear,
       template: 'the AAAI author kit (aaai.sty, AAAI press format)',
       required_sections: [],
+      recommended_sections: [],
       unresolved: [],
     },
     corpus: [
@@ -321,6 +352,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
     display: 'KDD',
     aliases: ['kdd', 'sigkdd', 'knowledge discovery and data mining'],
     cfp_url: 'https://kdd.org/',
+    guide_url: 'https://kdd.org/kdd2026/calls/view/kdd-2026-call-for-research-track-papers',
     focus_areas: [
       'data mining and knowledge discovery',
       'large-scale machine learning systems',
@@ -345,6 +377,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       citation_style: numeric,
       template: 'the ACM sigconf template (acmart, sigconf)',
       required_sections: [],
+      recommended_sections: [],
       unresolved: [],
     },
     corpus: [
@@ -408,7 +441,7 @@ export function profileFromSeed(resolved: ResolvedVenue): ConferenceProfile | nu
     accepted_paper_emphasis: seed.accepted_paper_emphasis,
     format_rules: { ...seed.rules, required_sections: [...seed.rules.required_sections], unresolved: [] },
     source: 'seed',
-    source_url: seed.cfp_url,
+    source_url: seed.guide_url || seed.cfp_url,
     updated_at: SEED_AS_OF,
   }
 }
@@ -420,7 +453,7 @@ export function seedCorpus(resolved: ResolvedVenue): { id: string; text: string;
   return seed.corpus.map((text, i) => ({
     id: `${resolved.venue_id}-seed-${i}`,
     text,
-    source: seed.cfp_url,
+    source: seed.guide_url || seed.cfp_url,
   }))
 }
 
@@ -435,5 +468,6 @@ export function seedCorpus(resolved: ResolvedVenue): { id: string; text: string;
 export function guessCfpUrl(resolved: ResolvedVenue, venueField: string): string | null {
   const explicit = venueField.match(/https?:\/\/\S+/)?.[0]
   if (explicit) return explicit.replace(/[).,]+$/, '')
-  return seedFor(resolved.family)?.cfp_url ?? null
+  const seed = seedFor(resolved.family)
+  return seed ? seed.guide_url || seed.cfp_url : null
 }
