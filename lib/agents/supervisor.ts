@@ -158,6 +158,9 @@ async function run(
   }
 
   // Deterministic pre-processing — no tokens spent on parsing.
+  // Truncation is reported rather than applied silently: a cut manuscript loses
+  // its reference list, which would make the format report quietly wrong.
+  const truncatedChars = Math.max(0, paperText.length - config.limits.maxManuscriptChars)
   const manuscript = parseManuscript(paperText.slice(0, config.limits.maxManuscriptChars))
   const topic = [manuscript.title, manuscript.abstract].filter(Boolean).join('. ').slice(0, 400)
 
@@ -225,6 +228,7 @@ async function run(
 
   const response = renderResponse({
     venue: profile.venue,
+    truncatedChars,
     profileNote: profileNote(profile),
     summary: typeof merge.summary === 'string' && merge.summary.trim() ? merge.summary.trim() : fallbackSummary(counts, framing),
     framing,
@@ -250,6 +254,7 @@ async function run(
 
 function renderResponse(a: {
   venue: string
+  truncatedChars: number
   profileNote: string
   summary: string
   framing: FramingReport | null
@@ -261,6 +266,15 @@ function renderResponse(a: {
   usage: { llm_calls: number; prompt_tokens: number; completion_tokens: number }
 }): string {
   const out: string[] = [`# ConfFit — ${a.venue}`, '', a.summary, '', a.profileNote]
+
+  if (a.truncatedChars > 0) {
+    const kept = Math.round(config.limits.maxManuscriptChars / 1000)
+    const dropped = Math.round(a.truncatedChars / 1000)
+    out.push(
+      '',
+      `⚠️ **Manuscript was truncated.** ConfFit read the first ${kept}k characters and dropped the last ${dropped}k. Anything past that point was not checked — very likely including the reference list, so the citation-style and references findings below are unreliable. Resend without the appendix.`,
+    )
+  }
 
   if (a.framing) {
     const p = a.framing.proposal

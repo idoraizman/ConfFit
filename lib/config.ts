@@ -54,9 +54,18 @@ export const config = {
   },
   limits: {
     /** Reject absurd payloads before we spend a token on them. */
-    maxPromptChars: 120_000,
-    /** Manuscript slice handed to any single LLM call. */
-    maxManuscriptChars: 24_000,
+    maxPromptChars: 200_000,
+    /**
+     * Ceiling on the manuscript we will parse.
+     *
+     * This is NOT a token lever: the full text never reaches the model. It is
+     * read only by code — the deterministic rule checks and the mechanical
+     * fixes — while every model-bound input is a bounded slice (abstract,
+     * intro opening, the spans a report flagged). So this only needs to be
+     * larger than a real paper. A 9-page conference submission with references
+     * runs 45k–55k characters; 150k leaves room for appendices.
+     */
+    maxManuscriptChars: 150_000,
     /** CFP text kept for profile synthesis. */
     maxCfpChars: 14_000,
   },
