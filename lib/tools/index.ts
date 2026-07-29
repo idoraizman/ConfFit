@@ -1,6 +1,6 @@
 import { TOOLS, type ToolName } from '../modules'
 import { search as vectorSearch } from '../store/vector'
-import { htmlToText } from './html'
+import { guideLinks, htmlToText } from './html'
 
 /**
  * The MCP-style tool layer. `listTools()` mirrors an MCP `tools/list` response
@@ -110,12 +110,14 @@ async function webFetch(url: string, maxChars: number): Promise<ToolResult> {
       }
     }
     const body = await res.text()
-    const text = /html/i.test(type) ? htmlToText(body) : body
+    const isHtml = /html/i.test(type)
+    const text = isHtml ? htmlToText(body) : body
+    const links = isHtml ? guideLinks(body, res.url) : []
     return {
       tool: 'web_fetch',
       ok: true,
       content: text.slice(0, maxChars),
-      meta: { url: res.url, chars: text.length, truncated: text.length > maxChars },
+      meta: { url: res.url, chars: text.length, truncated: text.length > maxChars, links },
     }
   } catch (e) {
     return { tool: 'web_fetch', ok: false, content: `Could not fetch ${url}: ${(e as Error).message}` }

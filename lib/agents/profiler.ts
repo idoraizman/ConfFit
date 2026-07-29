@@ -52,7 +52,8 @@ const PROFILER_SYSTEM_REACT = `You are ConferenceProfiler, a ReAct agent that bu
 You have these tools: web_fetch(url), web_search(query).
 Reply with a JSON object only:
 {"thought":"<one sentence>","action":"web_fetch"|"web_search"|"finish","action_input":"<url or query, or empty when finishing>"}
-A bare call-for-papers is usually topics, dates and policies; the concrete formatting rules live on the venue's author guide / author instructions / formatting page. If the observations so far give you scope but no page limit, template or citation style, fetch that page next — search for "<venue> author guide formatting instructions" or try the CFP URL with CallForPapers replaced by AuthorGuide.
+A bare call-for-papers is usually topics, dates and policies; the concrete formatting rules live on the venue's author guide / author instructions / formatting page. If the observations so far give you scope but no page limit, template or citation style, fetch that page next.
+An observation may end with a list of links found on that page. Prefer web_fetch on one of those links over web_search: search from this server frequently returns nothing but venue homepages, while a link the venue itself published is usually the guide you need.
 Choose "finish" as soon as the observations contain the venue's scope AND its submission rules (page limit, anonymity, citation style, template). Never take more than the allowed number of steps.`
 
 const PROFILER_SYSTEM_SYNTH = `You are ConferenceProfiler. Turn the observations from a venue's Call-for-Papers into a structured profile.
@@ -92,16 +93,16 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
     // The author pasted the rules themselves. This is the path that always
     // works: no venue site has to be reachable, readable or even public.
     if (input.providedGuidelines) {
-      const profile = await synthesiseProfile(input, pendingVenue, input.providedGuidelines, null)
-      if (!profile) {
+      const attempt = await synthesiseProfile(input, pendingVenue, input.providedGuidelines, null)
+      if (!attempt.profile) {
         return {
           kind: 'declined',
           message: `I could not read submission rules out of that text. Paste the part of the venue's author instructions that states the page limit, anonymity policy, template and citation style — **${pending.venue}** is still waiting.`,
         }
       }
       await store.clearPending(sessionId, pending.venue_id)
-      const grounding = await ground(profile, input.topic)
-      return { kind: 'profile', profile, grounding }
+      const grounding = await ground(attempt.profile, input.topic)
+      return { kind: 'profile', profile: attempt.profile, grounding }
     }
 
     const url = input.providedUrl ?? pending.proposed_url
@@ -115,23 +116,27 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
         ].join('\n'),
       }
     }
-    const profile = await ingest(input, pendingVenue, url)
-    if (!profile) {
+    const attempt = await ingest(input, pendingVenue, url)
+    if (!attempt.profile) {
       // The pending row deliberately survives a failed read: the next link the
       // user pastes has to land in the same approval, not be told there is
       // nothing pending.
+      const opening =
+        attempt.reason === 'no_rules'
+          ? `I read ${url}, but it does not state any submission rules — no page limit, anonymity policy, template or citation style. It reads like a landing page rather than the author instructions, so I have not added a profile for it: a profile with every field unknown would be served from the cache from now on and no gate would be left to correct it.`
+          : `I could not read a Call-for-Papers at ${url}.`
       return {
         kind: 'declined',
         message: [
-          `I could not read a Call-for-Papers at ${url}.`,
+          opening,
           '',
           `**${pending.venue}** is still waiting. Reply with another link — a direct URL to the venue's HTML call-for-papers or author-instructions page — or paste the guidelines text straight into the reply box, which always works. PDFs and JavaScript-only pages cannot be fetched.`,
         ].join('\n'),
       }
     }
     await store.clearPending(sessionId, pending.venue_id)
-    const grounding = await ground(profile, input.topic)
-    return { kind: 'profile', profile, grounding }
+    const grounding = await ground(attempt.profile, input.topic)
+    return { kind: 'profile', profile: attempt.profile, grounding }
   }
 
   // ── Cache check — no LLM ───────────────────────────────────────────────────
@@ -362,6 +367,16 @@ function venueTokens(display: string): string[] {
   return [...new Set(words)].filter((w) => !NAME_NOISE.has(w))
 }
 
+/** True for `https://www.siggraph.org/`, false for `…/author-instructions/`. */
+function isLandingPage(url: string): boolean {
+  try {
+    const { pathname, search } = new URL(url)
+    return !search && pathname.replace(/\/+$/, '') === ''
+  } catch {
+    return false
+  }
+}
+
 /** Fraction of the venue's distinctive words this hit actually mentions. */
 function nameCoverage(r: { title: string; url: string }, tokens: string[]): number {
   if (!tokens.length) return 1
@@ -385,9 +400,26 @@ function nameCoverage(r: { title: string; url: string }, tokens: string[]): numb
 function looksLikeVenuePage(r: { title: string; url: string }, tokens: string[]): boolean {
   const target = `${r.url} ${r.title}`
   if (nameCoverage(r, tokens) < 2 / 3) return false
+  // A bare landing page cannot hold submission rules, and proposing one costs
+  // the author a round trip to find that out. Bing from a datacenter returns
+  // little else, so this is the common production case, not an edge case.
+  if (isLandingPage(r.url) && !GUIDE_WORDS.test(target)) return false
   // No \b before the year: the commonest conference host glues it to letters
   // (`s2026.siggraph.org`, `cvpr2027.thecvf.com`), where \b never matches.
   return GUIDE_WORDS.test(target) || VENUE_WORDS.test(target) || /(?<!\d)20\d{2}(?!\d)/.test(r.url)
+}
+
+/**
+ * A fetch observation, with the page's own guide links appended.
+ *
+ * A landing page states no rules but almost always links to them, and the ReAct
+ * agent cannot follow a link it never sees.
+ */
+function withLinks(result: { content: string; meta?: Record<string, unknown> }): string {
+  const links = (result.meta?.links as string[] | undefined) ?? []
+  return links.length
+    ? `${result.content}\n\n[Links on this page that may hold the submission rules: ${links.join(', ')}]`
+    : result.content
 }
 
 /** RAG grounding: retrieve venue passages relevant to this specific paper. */
@@ -422,6 +454,15 @@ async function indexSeed(resolved: ResolvedVenue): Promise<void> {
 }
 
 /**
+ * Why an ingestion did not produce a profile. The two cases need different
+ * advice: `unreadable` means the page could not be fetched or held no text,
+ * `no_rules` means it was read fine and simply is not the author instructions.
+ */
+type ProfileAttempt =
+  | { profile: ConferenceProfile; reason?: undefined }
+  | { profile: null; reason: 'unreadable' | 'no_rules' }
+
+/**
  * ReAct ingestion, only ever reached after the user approved it.
  * Fetch → embed into Pinecone → synthesise the profile → persist to Supabase.
  */
@@ -429,7 +470,7 @@ async function ingest(
   input: ProfilerInput,
   resolved: ResolvedVenue,
   startUrl: string,
-): Promise<ConferenceProfile | null> {
+): Promise<ProfileAttempt> {
   const { tracer, store } = input
   const observations: string[] = []
   let sourceUrl = startUrl
@@ -438,7 +479,7 @@ async function ingest(
   // something to reason about — one fewer model call.
   if (startUrl) {
     const fetched = await callTool('web_fetch', { url: startUrl, max_chars: config.limits.maxCfpChars })
-    observations.push(`web_fetch(${startUrl}) → ${fetched.ok ? fetched.content : `FAILED: ${fetched.content}`}`)
+    observations.push(`web_fetch(${startUrl}) → ${fetched.ok ? withLinks(fetched) : `FAILED: ${fetched.content}`}`)
   }
 
   for (let i = 0; i < config.agents.reactMaxIters; i++) {
@@ -478,7 +519,7 @@ async function ingest(
     const result = await callTool(decision.action, args)
     if (decision.action === 'web_fetch' && result.ok) sourceUrl = String(result.meta?.url ?? sourceUrl)
     observations.push(
-      `${decision.action}(${decision.action_input}) → ${result.ok ? result.content : `FAILED: ${result.content}`}`,
+      `${decision.action}(${decision.action_input}) → ${result.ok ? withLinks(result) : `FAILED: ${result.content}`}`,
     )
   }
 
@@ -498,10 +539,10 @@ async function synthesiseProfile(
   resolved: ResolvedVenue,
   text: string,
   sourceUrl: string | null,
-): Promise<ConferenceProfile | null> {
+): Promise<ProfileAttempt> {
   const { tracer, store } = input
   const usable = text.trim()
-  if (usable.length < 200) return null
+  if (usable.length < 200) return { profile: null, reason: 'unreadable' }
   const provenance = sourceUrl ?? 'pasted by the author'
 
   // Index the CFP so rules_lookup and framing grounding work next time.
@@ -573,8 +614,33 @@ async function synthesiseProfile(
     updated_at: new Date().toISOString(),
   }
 
+  /*
+   * A page that states no rule at all must not become a cached profile.
+   * Measured in production: the only search engine reachable from the server
+   * proposes venue homepages, and ingesting one yielded a profile whose every
+   * field was unknown — which would then be served from cache forever, with no
+   * gate left to correct it. Refusing it keeps the approval open instead.
+   */
+  if (!statesAnyRule(profile)) {
+    console.warn(`[profiler] ${provenance} stated no submission rules; not caching a profile for ${resolved.venue_id}`)
+    return { profile: null, reason: 'no_rules' }
+  }
+
   await store.putProfile(profile)
-  return profile
+  return { profile }
+}
+
+/** Did the source actually yield something a format check could test? */
+function statesAnyRule(p: ConferenceProfile): boolean {
+  const r = p.format_rules
+  return (
+    r.page_limit !== null ||
+    r.anonymous !== null ||
+    r.abstract_word_limit !== null ||
+    r.template !== null ||
+    r.citation_style !== 'unknown' ||
+    r.required_sections.length > 0
+  )
 }
 
 function arr(v: unknown): string[] {

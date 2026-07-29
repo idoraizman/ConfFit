@@ -141,7 +141,16 @@ the union is ranked deterministically:
 2. Then author-guide pages over bare CFPs, full-paper rules over side tracks (art papers,
    posters), no PDFs (`web_fetch` cannot read them), no aggregators.
 3. Anything failing coverage, or carrying neither venue nor submission-guide vocabulary nor an
-   edition year in the URL, is never proposed.
+   edition year in the URL, is never proposed. Neither is a bare landing page: measured against
+   the deployed app, Bing returns little else, and `https://www.siggraph.org/` cannot contain a
+   page limit — approving one costs the author a round trip to discover that.
+
+An ingestion that resolves no rule at all — no page limit, anonymity policy, template or
+citation style — is treated as a failed read rather than a profile. It leaves the approval open
+instead of caching a profile whose every field is unknown, which would then be served from the
+cache with no gate left to correct it. Fetched pages also carry their own guide-looking links
+into the ReAct observations, so the agent can follow a venue's navigation instead of relying on
+a search that, from this server, mostly returns homepages.
 
 A search for a venue that does not exist still returns six confident results — for "Nimbus
 Symposium on Imaginary Systems 2032", a boat dealer and a toothbrush shop — so the gate lists
