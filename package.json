@@ -1,0 +1,33 @@
+{
+  "name": "conffit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ConfFit — agentic system that adapts a research paper to a target conference (framing + format).",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/smoke-test.mjs",
+    "test:live": "node scripts/smoke-test.mjs --live",
+    "setup:pinecone": "node scripts/setup-pinecone.mjs",
+    "capture:examples": "node scripts/capture-examples.mjs"
+  },
+  "dependencies": {
+    "@pinecone-database/pinecone": "^6.1.2",
+    "@supabase/supabase-js": "^2.58.0",
+    "next": "15.5.4",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}
