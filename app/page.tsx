@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ACCEPTED_EXTENSIONS,
+  GUIDELINE_EXTENSIONS,
   MAX_FILE_BYTES,
+  MAX_GUIDELINE_FILES,
+  MAX_GUIDELINE_FILE_BYTES,
+  MAX_GUIDELINE_TOTAL_BYTES,
+  isGuidelineFilename,
   describeFile,
   isAcceptedFilename,
   looksBinary,
@@ -37,6 +42,9 @@ export default function Page() {
   const [dragging, setDragging] = useState(false)
   const [loaded, setLoaded] = useState<string | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
+  const [link, setLink] = useState('')
+  const [guidelineFiles, setGuidelineFiles] = useState<File[]>([])
+  const guidelineInput = useRef<HTMLInputElement>(null)
 
   const last = turns[turns.length - 1]
   /** The human-in-the-loop gate, read out of the trace the run already returns. */
@@ -91,9 +99,9 @@ export default function Page() {
 
   /** Posts one prompt as the next turn of this session. */
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, files?: { name: string; data: string }[]) => {
       const body = text.trim()
-      if (!body) return
+      if (!body && !files?.length) return
       const id = Date.now()
       setTurns((t) => [...t, { id, prompt: body, result: null }])
       setBusy(true)
@@ -101,7 +109,7 @@ export default function Page() {
         const res = await fetch('/api/execute', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: body, session_id: sessionId }),
+          body: JSON.stringify({ prompt: body, session_id: sessionId, ...(files?.length ? { files } : {}) }),
         })
         const parsed = (await res.json()) as ExecuteResult
         setTurns((t) => t.map((x) => (x.id === id ? { ...x, result: parsed } : x)))
@@ -130,6 +138,66 @@ export default function Page() {
     if (busy || !text.trim()) return
     setReply('')
     await send(text)
+  }
+
+  /** A bare URL, which the Supervisor recognises in code as the venue's source. */
+  async function sendLink() {
+    const url = link.trim()
+    if (busy || !url) return
+    setLink('')
+    await send(url)
+  }
+
+  /**
+   * Validates the chosen guideline files before they are sent.
+   *
+   * The total matters as much as each file: the request carries them base64
+   * encoded, which is a third larger, and going over the platform's body limit
+   * would fail as an opaque 413 rather than as a message about attachments.
+   */
+  function pickGuidelines(list: FileList | null) {
+    setFileError(null)
+    if (!list?.length) return
+    const chosen = Array.from(list)
+    const rejected = chosen.filter((f) => !isGuidelineFilename(f.name))
+    if (rejected.length) {
+      setFileError(
+        `${rejected.map((f) => f.name).join(', ')}: ConfFit reads ${GUIDELINE_EXTENSIONS.join(', ')}. Export a Word document as PDF.`,
+      )
+      return
+    }
+    const merged = [...guidelineFiles]
+    for (const f of chosen) if (!merged.some((m) => m.name === f.name && m.size === f.size)) merged.push(f)
+    if (merged.length > MAX_GUIDELINE_FILES) {
+      setFileError(`At most ${MAX_GUIDELINE_FILES} files.`)
+      return
+    }
+    const oversized = merged.find((f) => f.size > MAX_GUIDELINE_FILE_BYTES)
+    if (oversized) {
+      setFileError(`${oversized.name} is ${Math.round(oversized.size / 1_000_000)} MB; the limit is ${Math.round(MAX_GUIDELINE_FILE_BYTES / 1_000_000)} MB per file.`)
+      return
+    }
+    const total = merged.reduce((sum, f) => sum + f.size, 0)
+    if (total > MAX_GUIDELINE_TOTAL_BYTES) {
+      setFileError(
+        `Those files total ${Math.round(total / 1_000_000)} MB; the limit is ${Math.round(MAX_GUIDELINE_TOTAL_BYTES / 1_000_000)} MB. Send the author-instructions document on its own.`,
+      )
+      return
+    }
+    setGuidelineFiles(merged)
+  }
+
+  async function sendGuidelineFiles() {
+    if (busy || !guidelineFiles.length) return
+    const files = guidelineFiles
+    setGuidelineFiles([])
+    setFileError(null)
+    try {
+      const encoded = await Promise.all(files.map(async (f) => ({ name: f.name, data: await toBase64(f) })))
+      await send(`Guidelines attached: ${files.map((f) => f.name).join(', ')}`, encoded)
+    } catch (e) {
+      setFileError(`Could not read the attachments: ${(e as Error).message}`)
+    }
   }
 
   return (
@@ -233,16 +301,109 @@ export default function Page() {
       ))}
 
       {turns.length > 0 && (
-        <div className={gate ? 'panel reply gated' : 'panel reply'}>
-          <label htmlFor="reply" className="hint">
-            {gate ? 'Your answer' : 'Reply — same session, no need to resend the paper'}
-          </label>
+        <div className={gate ? `panel reply gated ${gate.kind}` : 'panel reply'}>
+          {gate?.kind === 'source' ? (
+            <>
+              <h2 className="gatetitle">Guidelines needed for {gate.venue ?? 'this venue'}</h2>
+              <p className="gatenote">
+                ConfFit does not search the web for a venue&rsquo;s rules — a page it picked itself could be the wrong
+                venue, year or track, and the rules would look just as authoritative. Give it the real source:
+              </p>
 
-          {gate?.proposedUrl && (
-            <p className="gatenote">
-              Waiting on you: may ConfFit read <code>{gate.proposedUrl}</code> and add {gate.venue ?? 'that venue'} to
-              the knowledge base?
-            </p>
+              <div className="gategrid">
+                <div className="gatefield">
+                  <label htmlFor="gate-url">A link to the call-for-papers or author instructions</label>
+                  <div className="inline">
+                    <input
+                      id="gate-url"
+                      type="url"
+                      value={link}
+                      placeholder="https://venue.org/submissions/author-guidelines"
+                      onChange={(e) => setLink(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && link.trim()) {
+                          e.preventDefault()
+                          void sendLink()
+                        }
+                      }}
+                    />
+                    <button className="ghost" onClick={() => void sendLink()} disabled={busy || !link.trim()}>
+                      Read this link
+                    </button>
+                  </div>
+                  <span className="sub">HTML pages and PDFs both work.</span>
+                </div>
+
+                <div className="gatefield">
+                  <label htmlFor="gate-files">Or attach the guidelines</label>
+                  <div className="inline">
+                    <input
+                      id="gate-files"
+                      ref={guidelineInput}
+                      type="file"
+                      multiple
+                      accept={GUIDELINE_EXTENSIONS.join(',')}
+                      onChange={(e) => {
+                        pickGuidelines(e.target.files)
+                        e.target.value = ''
+                      }}
+                    />
+                    <button
+                      onClick={() => void sendGuidelineFiles()}
+                      disabled={busy || guidelineFiles.length === 0}
+                    >
+                      {busy && <span className="spinner" />}
+                      {busy
+                        ? 'Reading…'
+                        : guidelineFiles.length
+                          ? `Send ${guidelineFiles.length} file${guidelineFiles.length === 1 ? '' : 's'}`
+                          : 'Send files'}
+                    </button>
+                  </div>
+                  <span className="sub">
+                    PDF or text, up to {MAX_GUIDELINE_FILES} files and {Math.round(MAX_GUIDELINE_TOTAL_BYTES / 1_000_000)} MB
+                    total. Scanned PDFs have no text to read.
+                  </span>
+                  {guidelineFiles.length > 0 && (
+                    <ul className="filelist">
+                      {guidelineFiles.map((f) => (
+                        <li key={f.name}>
+                          {f.name} <span className="sub">{Math.max(1, Math.round(f.size / 1000))} kB</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {fileError && <p className="filenote bad">{fileError}</p>}
+                </div>
+              </div>
+
+              <label htmlFor="reply" className="hint">
+                Or paste the rules as text
+              </label>
+            </>
+          ) : gate?.kind === 'save' ? (
+            <>
+              <h2 className="gatetitle">Add {gate.venue ?? 'this venue'} to the knowledge base?</h2>
+              <p className="gatenote">
+                The rules above were used for this run only. Nothing has been written yet.
+              </p>
+              <div className="row">
+                <button onClick={() => void sendReply('yes')} disabled={busy}>
+                  {busy && <span className="spinner" />}
+                  Yes — remember these rules
+                </button>
+                <button className="ghost" onClick={() => void sendReply('no')} disabled={busy}>
+                  No — this run only
+                </button>
+              </div>
+              <label htmlFor="reply" className="hint">
+                Or reply in words
+              </label>
+            </>
+          ) : (
+            <label htmlFor="reply" className="hint">
+              Reply — same session, no need to resend the paper
+            </label>
           )}
 
           <textarea
@@ -252,9 +413,11 @@ export default function Page() {
             value={reply}
             onChange={(e) => setReply(e.target.value)}
             placeholder={
-              gate
-                ? 'yes  ·  or a link to the call-for-papers  ·  or paste the venue guidelines here'
-                : 'A follow-up question, an approval, a link, or pasted venue guidelines'
+              gate?.kind === 'source'
+                ? 'Page limit: 8 pages excluding references. Review is double-blind…'
+                : gate?.kind === 'save'
+                  ? 'yes  ·  no'
+                  : 'A follow-up question, an approval, a link, or pasted venue guidelines'
             }
             spellCheck={false}
             onKeyDown={(e) => {
@@ -272,15 +435,17 @@ export default function Page() {
             </button>
             {gate?.proposedUrl && (
               <button className="ghost approve" onClick={() => void sendReply('yes')} disabled={busy}>
-                Yes — fetch it and continue
+                Yes — read {shortUrl(gate.proposedUrl)}
               </button>
             )}
           </div>
 
           <p className="hint">
-            {gate
-              ? 'Pasting the guidelines text is the sure route — the profile is built from exactly what you paste and nothing is fetched. ⌘/Ctrl + Enter sends.'
-              : 'The paper stays attached to this session, so a follow-up only needs the new information. ⌘/Ctrl + Enter sends.'}
+            {gate?.kind === 'source'
+              ? 'Whatever you send is used verbatim — ConfFit reads only the source you name. ⌘/Ctrl + Enter sends.'
+              : gate?.kind === 'save'
+                ? 'Saving means the next paper for this venue skips the profiler entirely. ⌘/Ctrl + Enter sends.'
+                : 'The paper stays attached to this session, so a follow-up only needs the new information. ⌘/Ctrl + Enter sends.'}
           </p>
         </div>
       )}
@@ -294,24 +459,74 @@ export default function Page() {
   )
 }
 
+interface Gate {
+  /** `source` — ConfFit needs the guidelines. `save` — it asks whether to keep them. */
+  kind: 'source' | 'save'
+  proposedUrl: string | null
+  venue: string | null
+}
+
 /**
- * Reads the human-in-the-loop gate out of a finished turn.
+ * Reads which gate, if any, the last turn left open.
  *
- * The gate is already fully described in the `steps` trace the API returns —
- * `ask_user` with the question and `proposed_url` with the candidate — so the UI
- * can offer a one-click approval without adding a field to the response contract.
+ * Both gates are already fully described by the `steps` trace the API returns, so
+ * the dedicated cell is driven from that rather than from an extra field on the
+ * response — the wire contract stays {status, error, response, steps}.
  */
-function gateOf(result: ExecuteResult | null): { proposedUrl: string | null; venue: string | null } | null {
+function gateOf(result: ExecuteResult | null): Gate | null {
   if (!result || result.status !== 'ok') return null
+
+  // A save decision was just answered; that gate is closed.
+  for (const step of result.steps) {
+    const r = step.response as { gate?: unknown; decision?: unknown }
+    if (r.gate === 'save' && typeof r.decision === 'string') return null
+  }
+
   for (let i = result.steps.length - 1; i >= 0; i--) {
-    const r = result.steps[i].response as { ask_user?: unknown; proposed_url?: unknown; venue?: unknown }
-    if (typeof r.ask_user !== 'string') continue
-    return {
-      proposedUrl: typeof r.proposed_url === 'string' && r.proposed_url ? r.proposed_url : null,
-      venue: typeof r.venue === 'string' ? r.venue : null,
+    const r = result.steps[i].response as {
+      ask_user?: unknown
+      proposed_url?: unknown
+      venue?: unknown
+      gate?: unknown
+    }
+    if (typeof r.ask_user === 'string') {
+      return {
+        kind: 'source',
+        proposedUrl: typeof r.proposed_url === 'string' && r.proposed_url ? r.proposed_url : null,
+        venue: typeof r.venue === 'string' ? r.venue : null,
+      }
     }
   }
+
+  // The run finished and offered to remember the rules it just used.
+  if (/^## Add .+ to the knowledge base\?$/m.test(result.response)) {
+    const venue = result.response.match(/^## Add (.+) to the knowledge base\?$/m)?.[1] ?? null
+    return { kind: 'save', proposedUrl: null, venue }
+  }
   return null
+}
+
+/** Shortens a URL for a button label. */
+function shortUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return url.slice(0, 30)
+  }
+}
+
+/** Base64 for the JSON body; FileReader keeps this off the main thread's stack. */
+function toBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error(`could not read ${file.name}`))
+    reader.onload = () => {
+      const result = String(reader.result)
+      const comma = result.indexOf(',')
+      resolve(comma === -1 ? result : result.slice(comma + 1))
+    }
+    reader.readAsDataURL(file)
+  })
 }
 
 function TurnView({ turn }: { turn: Turn }) {

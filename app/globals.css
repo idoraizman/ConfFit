@@ -215,9 +215,87 @@ textarea.short {
 }
 
 .gatenote {
-  margin: 4px 0 12px;
+  margin: 4px 0 14px;
   font-size: 13px;
   color: var(--gate);
+}
+
+.gatetitle {
+  font-size: 17px;
+  margin: 2px 0 6px;
+  letter-spacing: -0.01em;
+}
+
+/* The two ways to hand over a source, side by side on a wide screen. */
+.gategrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.gatefield {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.gatefield label {
+  font: 600 12.5px/1.4 inherit;
+}
+
+.gatefield .inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.gatefield input[type='url'] {
+  flex: 1 1 200px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 9px 10px;
+  font: 12.5px var(--mono);
+}
+
+.gatefield input[type='url']:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.gatefield input[type='file'] {
+  flex: 1 1 180px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.gatefield button {
+  padding: 9px 14px;
+  font-size: 13px;
+}
+
+.gatefield .sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.filelist {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font: 12px var(--mono);
+}
+
+.filelist li {
+  overflow-wrap: anywhere;
 }
 
 .gatenote code {
