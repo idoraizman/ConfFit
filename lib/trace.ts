@@ -1,4 +1,4 @@
-import { chat, parseJsonObject, UsageMeter, type ChatRequest } from './llm'
+import { chat, JsonParseError, parseJsonObject, UsageMeter, type ChatRequest } from './llm'
 import type { ModuleName } from './modules'
 import type { Step } from './types'
 
@@ -31,7 +31,7 @@ export class Tracer {
     /** Shown in the trace instead of the raw string when the reply is JSON. */
     asJson = true,
   ): Promise<string> {
-    const { text, usage } = await chat(req)
+    const { text, usage, finish_reason } = await chat(req)
     this.usage.record(usage)
 
     let response: Record<string, unknown>
@@ -44,6 +44,11 @@ export class Tracer {
     } else {
       response = { text }
     }
+    // A completion that hit its token ceiling is the one failure mode that looks
+    // like a bad model reply but is really our budget, so it goes in the trace.
+    if (finish_reason && finish_reason !== 'stop') {
+      response = { ...response, finish_reason, truncated: finish_reason === 'length' }
+    }
     this.push(module, { system: req.system, user: req.user }, response)
     return text
   }
@@ -52,6 +57,26 @@ export class Tracer {
   async callJson<T>(module: ModuleName, req: ChatRequest): Promise<T> {
     const text = await this.call(module, { ...req, json: true }, true)
     return parseJsonObject<T>(text)
+  }
+
+  /**
+   * As `callJson`, but returns null instead of throwing when the reply cannot be
+   * parsed. For a step whose result is a *decision* — which tool to call next —
+   * an unreadable answer should end the loop with what has been gathered so far,
+   * not fail the whole request.
+   *
+   * Provider failures still propagate: those are not decisions the caller can
+   * sensibly continue without, and hiding them would report a dead gateway as a
+   * problem with the venue's website.
+   */
+  async callJsonSoft<T>(module: ModuleName, req: ChatRequest): Promise<T | null> {
+    try {
+      return await this.callJson<T>(module, req)
+    } catch (e) {
+      if (!(e instanceof JsonParseError)) throw e
+      console.warn(`[trace] ${module} returned unusable JSON:`, e.message)
+      return null
+    }
   }
 
   private push(

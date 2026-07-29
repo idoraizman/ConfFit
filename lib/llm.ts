@@ -25,6 +25,14 @@ export class LLMError extends Error {
   }
 }
 
+/** The model answered, but not with a readable JSON object. */
+export class JsonParseError extends LLMError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'JsonParseError'
+  }
+}
+
 export interface ChatRequest {
   system: string
   user: string
@@ -39,6 +47,13 @@ export interface ChatRequest {
 export interface ChatResult {
   text: string
   usage: { prompt_tokens: number; completion_tokens: number }
+  /**
+   * Why the model stopped. `"length"` means the completion hit `maxTokens` and
+   * was cut off mid-word — with a JSON reply that shows up downstream as an
+   * unparseable object, so callers need to be able to tell truncation apart
+   * from a model that simply answered badly.
+   */
+  finish_reason: string | null
 }
 
 /** Dialect facts we learn from the gateway and reuse for the rest of the process. */
@@ -104,7 +119,7 @@ export async function chat(req: ChatRequest): Promise<ChatResult> {
         : typeof req.mock === 'string'
           ? req.mock
           : JSON.stringify(req.mock)
-    return { text, usage: { prompt_tokens: 0, completion_tokens: 0 } }
+    return { text, usage: { prompt_tokens: 0, completion_tokens: 0 }, finish_reason: 'stop' }
   }
 
   if (!config.llm.apiKey) {
@@ -140,12 +155,19 @@ export async function chat(req: ChatRequest): Promise<ChatResult> {
 
     if (res.ok) {
       const json = (await res.json()) as {
-        choices?: { message?: { content?: string } }[]
+        choices?: { message?: { content?: string }; finish_reason?: string }[]
         usage?: { prompt_tokens?: number; completion_tokens?: number }
       }
       const text = json.choices?.[0]?.message?.content ?? ''
+      const finishReason = json.choices?.[0]?.finish_reason ?? null
       if (!text.trim()) {
-        throw new LLMError('The LLM provider returned an empty completion.')
+        // A reasoning model can spend the whole completion budget thinking and
+        // return nothing. Say so, rather than reporting a blank answer.
+        throw new LLMError(
+          finishReason === 'length'
+            ? `The LLM provider returned no content: the completion budget (${req.maxTokens ?? 'default'} tokens) was exhausted before an answer was written.`
+            : 'The LLM provider returned an empty completion.',
+        )
       }
       return {
         text,
@@ -153,6 +175,7 @@ export async function chat(req: ChatRequest): Promise<ChatResult> {
           prompt_tokens: json.usage?.prompt_tokens ?? 0,
           completion_tokens: json.usage?.completion_tokens ?? 0,
         },
+        finish_reason: finishReason,
       }
     }
 
@@ -196,7 +219,8 @@ export async function chat(req: ChatRequest): Promise<ChatResult> {
  * Pulls a JSON object out of a completion.
  *
  * Models occasionally wrap JSON in prose or a ```json fence even when asked not
- * to. We recover from that in code rather than paying for a repair call.
+ * to, and a completion that hits its token ceiling stops mid-object. We recover
+ * from both in code rather than paying for a repair call.
  */
 export function parseJsonObject<T>(text: string): T {
   const trimmed = text.trim()
@@ -209,6 +233,13 @@ export function parseJsonObject<T>(text: string): T {
   const last = trimmed.lastIndexOf('}')
   if (first !== -1 && last > first) candidates.push(trimmed.slice(first, last + 1))
 
+  // A model asked for one object sometimes writes two, one per line. Take the
+  // first: it is the answer, and the rest is the model second-guessing itself.
+  const firstObject = balancedObject(trimmed)
+  if (firstObject) candidates.push(firstObject)
+
+  candidates.push(...repairTruncated(trimmed))
+
   for (const c of candidates) {
     try {
       const parsed = JSON.parse(c)
@@ -217,7 +248,84 @@ export function parseJsonObject<T>(text: string): T {
       /* try the next candidate */
     }
   }
-  throw new LLMError(`Could not parse a JSON object from the model output: ${trimmed.slice(0, 200)}`)
+  throw new JsonParseError(`Could not parse a JSON object from the model output: ${trimmed.slice(0, 200)}`)
+}
+
+/** The first `{...}` whose braces balance, ignoring braces inside strings. */
+function balancedObject(text: string): string | null {
+  const start = text.indexOf('{')
+  if (start === -1) return null
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (inString) {
+      if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{' || ch === '[') depth++
+    else if (ch === '}' || ch === ']') {
+      depth--
+      if (depth === 0) return text.slice(start, i + 1)
+    }
+  }
+  return null
+}
+
+/**
+ * Salvage candidates for an object that was cut off mid-write.
+ *
+ * Only key/value pairs that arrived complete are kept: a half-received value is
+ * dropped rather than closed off, because half a URL or half a page limit is
+ * worse than a missing field — a missing field reads as "unknown" everywhere
+ * downstream, while a truncated one reads as a confident wrong answer.
+ */
+function repairTruncated(text: string): string[] {
+  const start = text.indexOf('{')
+  if (start === -1) return []
+
+  const closers: string[] = []
+  let inString = false
+  let escaped = false
+  /** Index of the last comma that separated two complete top-level pairs. */
+  let lastPairEnd = -1
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (inString) {
+      if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{') closers.unshift('}')
+    else if (ch === '[') closers.unshift(']')
+    else if (ch === '}' || ch === ']') closers.shift()
+    else if (ch === ',' && closers.length === 1) lastPairEnd = i
+  }
+  if (!closers.length) return []
+
+  const out: string[] = []
+  // The object may be complete apart from its closing braces. A tail that is a
+  // bare number is excluded: `"page_limit":1` is valid JSON and a truncated 18,
+  // which is the one kind of half-value that would parse and be believed.
+  if (!inString && !/[,:]\s*$/.test(text) && !/:\s*-?\d+(\.\d+)?$/.test(text)) {
+    out.push(text.slice(start) + closers.join(''))
+  }
+  // Otherwise fall back to everything up to the last complete pair.
+  if (lastPairEnd > start) out.push(text.slice(start, lastPairEnd) + '}')
+  return out
 }
 
 /** Embeds a batch of texts. One HTTP call per batch, not per text. */
