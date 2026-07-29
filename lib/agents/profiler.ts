@@ -12,7 +12,7 @@ import type { Store } from '../store'
 import { chunk, search, upsertChunks, vectorBackend } from '../store/vector'
 import { callTool } from '../tools'
 import type { Tracer } from '../trace'
-import type { ConferenceProfile, FormatRules, PendingApproval, Task } from '../types'
+import type { ConferenceProfile, FormatRules, PendingApproval, Task, TemplateSpec } from '../types'
 
 /**
  * ConferenceProfiler — ReAct + RAG, guarded by a human-in-the-loop gate.
@@ -54,8 +54,12 @@ Return a JSON object only, with exactly these keys:
 {"focus_areas":[string],"valued_criteria":[string],"accepted_paper_emphasis":[string],
  "format_rules":{"page_limit":number|null,"references_in_limit":boolean|null,"abstract_word_limit":number|null,
                  "anonymous":boolean|null,"citation_style":"numeric"|"author-year"|"unknown",
-                 "template":string|null,"required_sections":[string],"recommended_sections":[string],"unresolved":[string]}}
+                 "template":string|null,"required_sections":[string],"recommended_sections":[string],"unresolved":[string],
+                 "template_spec":{"style_package":string|null,"bibliography_style":string|null,
+                                  "deanonymising_options":[string],"forbidden_macros":[string],
+                                  "forbids_layout_override":boolean,"template_url":string|null}|null}}
 Rules: use null and "unknown" for anything the observations do not state — never guess a page limit or a review model. List every rule you could not determine in "unresolved". Keep each list to at most 5 short entries.
+template_spec describes the venue's LaTeX template only where the guide states it verbatim: style_package is the .sty an author writes in \\usepackage{...} (without the extension), bibliography_style is the argument of \\bibliographystyle, deanonymising_options are style options that reveal author names (often "final" or "preprint"), forbidden_macros are commands a submission must not contain, and forbids_layout_override is true when the venue says not to change margins or the text area. Set template_spec to null rather than guessing a package name — a wrong one produces a confident but false complaint about the author's preamble.
 required_sections is only for sections whose absence breaks a rule ("must include", "will be desk rejected without"). Anything the venue calls encouraged, recommended or optional goes in recommended_sections instead — reporting encouragement as a violation sends authors chasing a problem they do not have.`
 
 export async function runConferenceProfiler(input: ProfilerInput): Promise<ProfilerOutput> {
@@ -310,6 +314,7 @@ async function ingest(
         anonymous: true,
         citation_style: 'author-year',
         template: '(mock) official template',
+        template_spec: null,
         required_sections: [],
         recommended_sections: [],
         unresolved: [],
@@ -334,6 +339,7 @@ async function ingest(
       citation_style:
         rules.citation_style === 'numeric' || rules.citation_style === 'author-year' ? rules.citation_style : 'unknown',
       template: typeof rules.template === 'string' && rules.template ? rules.template : null,
+      template_spec: templateSpec(rules.template_spec),
       required_sections: arr(rules.required_sections),
       recommended_sections: arr(rules.recommended_sections),
       unresolved: arr(rules.unresolved),
@@ -349,6 +355,25 @@ async function ingest(
 
 function arr(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim() !== '').slice(0, 6) : []
+}
+
+/** Accepts a template spec only when it names a style package worth checking. */
+function templateSpec(v: unknown): TemplateSpec | null {
+  if (!v || typeof v !== 'object') return null
+  const t = v as Partial<TemplateSpec>
+  const style = typeof t.style_package === 'string' && t.style_package.trim() ? t.style_package.trim() : null
+  const bib = typeof t.bibliography_style === 'string' && t.bibliography_style.trim() ? t.bibliography_style.trim() : null
+  // With neither a style package nor a bibliography style there is nothing the
+  // preamble checks could test, so keep it null rather than half-populated.
+  if (!style && !bib) return null
+  return {
+    style_package: style?.replace(/\.sty$/i, '') ?? null,
+    bibliography_style: bib?.replace(/\.bst$/i, '') ?? null,
+    deanonymising_options: arr(t.deanonymising_options),
+    forbidden_macros: arr(t.forbidden_macros),
+    forbids_layout_override: t.forbids_layout_override === true,
+    template_url: typeof t.template_url === 'string' && t.template_url.trim() ? t.template_url.trim() : null,
+  }
 }
 
 function numOrNull(v: unknown): number | null {
