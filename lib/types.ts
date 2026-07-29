@@ -40,6 +40,31 @@ export type ExecuteResult = ExecuteOk | ExecuteErr
 
 export type CitationStyle = 'numeric' | 'author-year' | 'unknown'
 
+/**
+ * The parts of a venue's LaTeX template that can be verified from the author's
+ * source.
+ *
+ * Deliberately narrow. Most typographic rules a venue publishes — 10pt type,
+ * a 5.5x9 inch text block, Times, small-caps headings — are imposed by the
+ * style file itself, so looking for them in a .tex proves nothing. They live in
+ * the RAG corpus instead. What the source *does* determine is preamble hygiene,
+ * and that is what this describes.
+ */
+export interface TemplateSpec {
+  /** Style package the venue requires, e.g. "iclr2026_conference". */
+  style_package: string | null
+  /** The \bibliographystyle the venue requires. */
+  bibliography_style: string | null
+  /** Style options that switch anonymity off, e.g. ["final", "preprint"]. */
+  deanonymising_options: string[]
+  /** Macros that must not appear in a submission, e.g. ["\\iclrfinalcopy"]. */
+  forbidden_macros: string[]
+  /** The venue forbids changing the text rectangle it defines. */
+  forbids_layout_override: boolean
+  /** Where the author downloads the template. */
+  template_url: string | null
+}
+
 export interface FormatRules {
   /** Main-body page limit, excluding references/appendix. */
   page_limit: number | null
@@ -54,6 +79,8 @@ export interface FormatRules {
   citation_style: CitationStyle
   /** Human-readable template name, e.g. "ICLR 2027 LaTeX style (natbib)". */
   template: string | null
+  /** Machine-checkable template requirements; null when the venue's are unknown. */
+  template_spec: TemplateSpec | null
   /** Sections whose absence is a rule violation (ACL desk-rejects without one). */
   required_sections: string[]
   /**

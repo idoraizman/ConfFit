@@ -1,5 +1,6 @@
+import { bibliographyStyleOf, usedPackages } from './latex'
 import { countWords } from './manuscript'
-import type { CheckResult, FormatRules, ParsedManuscript } from './types'
+import type { CheckResult, FormatRules, ParsedManuscript, TemplateSpec } from './types'
 
 /**
  * Deterministic compliance checks. Every rule that can be decided by measuring
@@ -266,18 +267,122 @@ export function runFormatChecks(m: ParsedManuscript, rules: FormatRules): CheckO
   })
 
   // ── Template ───────────────────────────────────────────────────────────────
+  // For LaTeX source the preamble is checkable, so the old blanket "cannot
+  // verify the template" warning would be an over-claim in the other direction.
+  const spec = rules.template_spec
+  if (m.format === 'latex' && spec) {
+    checks.push(...templateChecks(m, rules, spec))
+  }
+
   checks.push({
     rule: 'template',
     status: rules.template ? 'warn' : 'unknown',
     detail: rules.template
-      ? `The venue requires ${rules.template}. ConfFit reads plain text and cannot verify the compiled template.`
+      ? `The venue requires ${rules.template}.${
+          m.format === 'latex' && spec
+            ? ' The preamble checks above cover what the source determines; page geometry, fonts and figure legibility can only be confirmed on the compiled PDF.'
+            : ' ConfFit reads source text and cannot verify the compiled output.'
+        }`
       : 'The required template is not recorded for this venue.',
     suggestion: rules.template
-      ? `Compile with ${rules.template} and re-check page count on the compiled PDF.`
+      ? `Compile with the official template and re-check the page count and layout on the resulting PDF.`
       : 'Download the official style files from the venue site.',
   })
 
   return { checks, leaks, ambiguous: [...new Set([...ambiguous, ...rules.unresolved])] }
+}
+
+/** Layout commands a venue that fixes its own text block does not permit. */
+const LAYOUT_LENGTHS = /\\setlength\s*\{\s*\\(textwidth|textheight|topmargin|oddsidemargin|evensidemargin|hoffset|voffset|marginparwidth)\s*\}/g
+
+/**
+ * Preamble checks — the part of a venue's template the author's source actually
+ * decides. Each one is verifiable and each one has a mechanical fix.
+ */
+function templateChecks(m: ParsedManuscript, rules: FormatRules, spec: TemplateSpec): CheckResult[] {
+  const out: CheckResult[] = []
+  const packages = usedPackages(m.raw)
+  const where = spec.template_url ? ` The template is at ${spec.template_url}.` : ''
+
+  // 1. Is the venue's style package loaded at all?
+  if (spec.style_package) {
+    const loaded = packages.find((p) => p.name === spec.style_package)
+    out.push({
+      rule: 'template_style_file',
+      status: loaded ? 'pass' : 'fail',
+      detail: loaded
+        ? `The manuscript loads \\usepackage{${spec.style_package}}.`
+        : `The manuscript never loads \\usepackage{${spec.style_package}}; its preamble is \\documentclass{${
+            m.raw.match(/\\documentclass\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}/)?.[1] ?? 'article'
+          }} with ${packages.length} generic package(s). Nothing about the submission is in the venue's format.`,
+      suggestion: loaded
+        ? 'No action needed.'
+        : `Load the venue style file and put the .sty next to your .tex before compiling.${where}`,
+      evidence: loaded ? undefined : m.raw.slice(0, 400),
+    })
+  }
+
+  // 2. Is the bibliography style the venue's?
+  if (spec.bibliography_style) {
+    const actual = bibliographyStyleOf(m.raw)
+    const ok = actual === spec.bibliography_style
+    out.push({
+      rule: 'template_bibliography_style',
+      status: ok ? 'pass' : 'fail',
+      detail: ok
+        ? `\\bibliographystyle{${actual}} matches the venue.`
+        : actual
+          ? `\\bibliographystyle{${actual}} is set; the venue requires {${spec.bibliography_style}}.`
+          : `No \\bibliographystyle is set; the venue requires {${spec.bibliography_style}}.`,
+      suggestion: ok
+        ? 'No action needed.'
+        : `Set \\bibliographystyle{${spec.bibliography_style}} so the bibliography renders in the venue's format.`,
+    })
+  }
+
+  // 3. Does the source override the layout the style file fixes?
+  if (spec.forbids_layout_override) {
+    const offenders: string[] = []
+    if (packages.some((p) => p.name === 'geometry')) offenders.push('\\usepackage{geometry}')
+    const geo = m.raw.match(/\\geometry\s*\{[^}]*\}/g) ?? []
+    offenders.push(...geo)
+    offenders.push(...(m.raw.match(LAYOUT_LENGTHS) ?? []))
+
+    out.push({
+      rule: 'template_layout_override',
+      status: offenders.length ? 'fail' : 'pass',
+      detail: offenders.length
+        ? `The venue fixes the text block and forbids changing it, but the preamble sets ${offenders.join(', ')}.`
+        : 'The preamble does not override the venue’s page geometry.',
+      suggestion: offenders.length
+        ? 'Remove the geometry package and every margin/length override; the style file already sets the required text block.'
+        : 'No action needed.',
+      evidence: offenders.length ? offenders.join('\n') : undefined,
+    })
+  }
+
+  // 4. Would this submission be de-anonymised by a style option or macro?
+  if (rules.anonymous) {
+    const styleOpts = packages.find((p) => p.name === spec.style_package)?.options ?? []
+    const badOpts = styleOpts.filter((o) => spec.deanonymising_options.includes(o))
+    const badMacros = spec.forbidden_macros.filter((cmd) =>
+      new RegExp(`${cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(m.raw),
+    )
+    const hits = [...badOpts.map((o) => `[${o}]`), ...badMacros]
+
+    out.push({
+      rule: 'template_anonymity_option',
+      status: hits.length ? 'fail' : 'pass',
+      detail: hits.length
+        ? `${hits.join(' and ')} switches the template into camera-ready mode, which prints the author names. On a double-blind submission that is a desk-reject risk.`
+        : 'No camera-ready or de-anonymising option is set.',
+      suggestion: hits.length
+        ? `Remove ${hits.join(' and ')} until the paper is accepted.`
+        : 'No action needed.',
+    })
+  }
+
+  return out
 }
 
 function describeStyle(s: string): string {

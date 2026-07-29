@@ -238,6 +238,75 @@ export function innerSpan(text: string, kind: 'abstract' | 'title'): { start: nu
   return cmd ? { start: cmd.contentStart, end: cmd.end - 1 } : null
 }
 
+// ─── Preamble inspection and surgery ─────────────────────────────────────────
+
+/** All `\usepackage[opts]{a,b}` loads, flattened to one entry per package. */
+export function usedPackages(src: string): { name: string; options: string[] }[] {
+  const out: { name: string; options: string[] }[] = []
+  const re = /\\usepackage\s*(?:\[([^\]]*)\])?\s*\{([^}]*)\}/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src))) {
+    const options = (m[1] ?? '')
+      .split(',')
+      .map((o) => o.trim())
+      .filter(Boolean)
+    for (const name of m[2].split(',').map((n) => n.trim()).filter(Boolean)) {
+      out.push({ name, options })
+    }
+  }
+  return out
+}
+
+export function bibliographyStyleOf(src: string): string | null {
+  return findCommand(src, 'bibliographystyle')?.content.trim() ?? null
+}
+
+/**
+ * Removes every `\name[opt]{arg}` (balanced braces) from the source.
+ *
+ * Used to strip layout overrides. Note that `\usepackage{geometry}` and
+ * `\geometry{...}` must be removed together — leaving either one behind is a
+ * build error, which would be a worse outcome than the finding it fixes.
+ */
+export function stripCommand(src: string, name: string): string {
+  let out = src
+  for (;;) {
+    const cmd = findCommand(out, name)
+    if (!cmd) break
+    // Swallow an optional [..] argument that sits before the brace group.
+    const before = out.slice(0, cmd.start)
+    const after = out.slice(cmd.end).replace(/^[ \t]*\n/, '\n')
+    out = before + after
+  }
+  // Argument-less spellings, e.g. \iclrfinalcopy.
+  return out.replace(new RegExp(`\\\\${name}\\b[ \\t]*\\n?`, 'g'), '')
+}
+
+/**
+ * Removes one package from the preamble, including from a comma-separated
+ * `\usepackage{a,b,c}` list, and drops the whole load when it was the only one.
+ */
+export function stripPackage(src: string, pkg: string): string {
+  return src.replace(
+    /\\usepackage\s*(\[[^\]]*\])?\s*\{([^}]*)\}[ \t]*\n?/g,
+    (whole, opts: string | undefined, names: string) => {
+      const kept = names
+        .split(',')
+        .map((n) => n.trim())
+        .filter((n) => n && n !== pkg)
+      if (kept.length === names.split(',').map((n) => n.trim()).filter(Boolean).length) return whole
+      return kept.length ? `\\usepackage${opts ?? ''}{${kept.join(', ')}}\n` : ''
+    },
+  )
+}
+
+/** Inserts a package load immediately after \documentclass. */
+export function insertPackage(src: string, pkg: string): string {
+  const cls = findCommand(src, 'documentclass')
+  if (!cls) return `\\usepackage{${pkg}}\n${src}`
+  return `${src.slice(0, cls.end)}\n\\usepackage{${pkg}}${src.slice(cls.end)}`
+}
+
 /** True when the bibliography lives in a separate .bib the user did not paste. */
 export function hasExternalBibliography(src: string): boolean {
   return /\\bibliography\s*\{/.test(src) && !/\\begin\s*\{thebibliography\}/.test(src) && !/^@\w+\s*\{/m.test(src)
