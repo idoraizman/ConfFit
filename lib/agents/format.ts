@@ -32,7 +32,8 @@ Return a JSON object only:
 Rules:
 - Only emit a resolution for a rule that was given to you; do not invent rules.
 - Change a status away from "unknown" only when a retrieved passage states the rule. Otherwise leave it "unknown" and say what the author should confirm.
-- Suggestions must be specific to this manuscript (name the section, the count, the offending text). Never restate the rule.`
+- Suggestions must be specific to this manuscript (name the section, the count, the offending text). Never restate the rule.
+- The status describes the manuscript the author submitted, so a rule stays "fail" even once code has fixed it. When a finding appears under "Already fixed automatically", say so in the suggestion and give only the residual action the author still has to take — never tell them to redo work that is already done.`
 
 export interface FormatInput {
   tracer: Tracer

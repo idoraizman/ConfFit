@@ -88,9 +88,25 @@ export function applyEdits(text: string, edits: Edit[]): { text: string; applied
 
   for (const edit of edits) {
     const parsed = parseManuscript(out)
-    const target = edit.target.trim()
-    const replacement = edit.action === 'delete' ? '' : edit.new_text
+    // Models sometimes decorate the target ("section:Introduction (opening)");
+    // strip any parenthetical before matching.
+    const target = edit.target.trim().replace(/\s*\([^)]*\)\s*$/, '')
+    const sectionName = target.replace(/^section:\s*/i, '')
+    const existing = parsed.sections.find((s) => s.name.toLowerCase() === sectionName.toLowerCase())
 
+    // A section the manuscript does not have yet — a required Limitations or
+    // Ethics Statement — is an insertion, not a replacement.
+    if (edit.action === 'insert' || (/^section:/i.test(target) && !existing && edit.action === 'replace')) {
+      if (!edit.new_text.trim()) {
+        skipped.push(`${edit.target} (no text to insert)`)
+        continue
+      }
+      out = insertSection(out, sectionName, edit.new_text, parsed)
+      applied.push(`Added ${sectionName}: ${edit.reason}`)
+      continue
+    }
+
+    const replacement = edit.action === 'delete' ? '' : edit.new_text
     let span: { start: number; end: number } | null = null
 
     if (/^title$/i.test(target) && parsed.title) {
@@ -102,14 +118,21 @@ export function applyEdits(text: string, edits: Edit[]): { text: string; applied
     } else if (/^abstract$/i.test(target) && parsed.abstract) {
       const i = out.indexOf(parsed.abstract)
       if (i !== -1) span = { start: i, end: i + parsed.abstract.length }
-    } else {
-      const name = target.replace(/^section:\s*/i, '')
-      const sec = parsed.sections.find((s) => s.name.toLowerCase() === name.toLowerCase())
-      if (sec) {
-        // Keep the heading line, replace the body beneath it.
-        const bodyStart = sec.body ? out.indexOf(sec.body, sec.start) : -1
-        span = bodyStart === -1 ? { start: sec.start, end: sec.end } : { start: bodyStart, end: bodyStart + sec.body.length }
+    } else if (/^intro(duction)?_?opening$/i.test(target)) {
+      // Only the first paragraph of the introduction, never the whole section.
+      const intro = parsed.sections.find((s) => s.name === 'Introduction')
+      const firstPara = intro?.body.split(/\n\s*\n/)[0]?.trim()
+      if (firstPara) {
+        const i = out.indexOf(firstPara, intro!.start)
+        if (i !== -1) span = { start: i, end: i + firstPara.length }
       }
+    } else if (existing) {
+      // Keep the heading line, replace the body beneath it.
+      const bodyStart = existing.body ? out.indexOf(existing.body, existing.start) : -1
+      span =
+        bodyStart === -1
+          ? { start: existing.start, end: existing.end }
+          : { start: bodyStart, end: bodyStart + existing.body.length }
     }
 
     if (!span) {
@@ -117,8 +140,29 @@ export function applyEdits(text: string, edits: Edit[]): { text: string; applied
       continue
     }
     out = out.slice(0, span.start) + replacement + out.slice(span.end)
-    applied.push(`${edit.action === 'delete' ? 'Removed' : 'Rewrote'} ${edit.target}: ${edit.reason}`)
+    applied.push(`${edit.action === 'delete' ? 'Removed' : 'Rewrote'} ${target}: ${edit.reason}`)
   }
 
   return { text: out.replace(/\n{4,}/g, '\n\n\n'), applied, skipped }
+}
+
+/**
+ * Inserts a new section immediately before the reference list, which is where
+ * venues expect statements like Limitations, Ethics and Reproducibility.
+ */
+function insertSection(text: string, name: string, body: string, parsed: ParsedManuscript): string {
+  // The model usually repeats the heading at the top of new_text; drop it so
+  // the inserted section does not end up with the title twice.
+  const lines = body.trim().split('\n')
+  const first = lines[0]
+    ?.replace(/^#{1,6}\s*/, '')
+    .replace(/^\**|\**$/g, '')
+    .replace(/[:.]\s*$/, '')
+    .trim()
+  if (first && first.toLowerCase() === name.toLowerCase()) lines.shift()
+
+  const block = `\n\n${name}\n${lines.join('\n').trim()}\n`
+  const refs = parsed.sections.find((s) => s.name === 'References')
+  if (refs) return (text.slice(0, refs.start) + block + '\n' + text.slice(refs.start)).replace(/\n{4,}/g, '\n\n\n')
+  return (text.trimEnd() + block).replace(/\n{4,}/g, '\n\n\n')
 }

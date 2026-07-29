@@ -18,12 +18,23 @@ import type { Edit, FormatReport, FramingReport, ParsedManuscript } from '../typ
 
 const FIXER_SYSTEM = `You are UnifiedFixer. You apply a framing report and a format report to one manuscript, in a single pass.
 Return a JSON object only:
-{"edits":[{"target":"title"|"abstract"|"section:<Name>","action":"replace"|"delete","new_text":"<the full replacement text for that target>","reason":"<short>"}],
+{"edits":[{"target":"<target>","action":"replace"|"insert"|"delete","new_text":"<full text for that target>","reason":"<short>"}],
  "summary":"<2-3 sentences describing what you changed and why>"}
+
+The ONLY valid targets are:
+- "title"                — replace the paper title
+- "abstract"             — replace the whole abstract
+- "intro_opening"        — replace the FIRST PARAGRAPH of the introduction only
+- "section:<Name>"       — with action "insert" to add a section the paper is missing
+                           (for example "section:Ethics Statement"), or action "delete"
+                           to remove one. Use the exact name, with no parenthetical.
+Any other target is discarded.
+
 Rules:
 - Emit an edit only where a report asks for a change. Leave everything else alone.
 - Reconcile the two reports: if the framing report rewrites the abstract and the format report says the abstract is over the word limit, emit one abstract edit that satisfies both.
-- new_text must be the complete replacement for that target, in the manuscript's own voice, using only claims the paper already makes.
+- new_text must be the complete text for that target, in the manuscript's own voice, using only claims the paper already makes.
+- For "section:<Name>", new_text is the section BODY only. Do not repeat the heading — code writes it.
 - Never re-emit unchanged text as an edit. Never invent results, citations, or numbers.
 - Mechanical fixes (anonymisation, removed acknowledgements) have already been applied by code; do not redo them.`
 
@@ -89,7 +100,8 @@ export async function runUnifiedFixer(input: FixerInput): Promise<FixerOutput> {
     `--- CURRENT TEXT OF THE SPANS YOU MAY EDIT ---`,
     `title: ${current.title ?? '(none)'}`,
     `abstract: ${current.abstract ?? '(none)'}`,
-    intro ? `section:Introduction (opening): ${intro.body.slice(0, 1200)}` : null,
+    intro ? `intro_opening: ${intro.body.split(/\n\s*\n/)[0]?.trim().slice(0, 1200) ?? '(none)'}` : null,
+    `sections currently present: ${current.sections.map((s) => s.name).join(', ') || '(unstructured text)'}`,
     framing
       ? `--- FRAMING REPORT (${framing.venue}) ---\n${JSON.stringify({
           angle: framing.proposal.angle,
@@ -133,7 +145,10 @@ export async function runUnifiedFixer(input: FixerInput): Promise<FixerOutput> {
 
   const edits = (result.edits ?? []).filter(
     (e): e is Edit =>
-      Boolean(e) && typeof e.target === 'string' && (e.action === 'replace' || e.action === 'delete') && typeof e.new_text === 'string',
+      Boolean(e) &&
+      typeof e.target === 'string' &&
+      (e.action === 'replace' || e.action === 'delete' || e.action === 'insert') &&
+      typeof e.new_text === 'string',
   )
 
   const spliced = applyEdits(text, edits)

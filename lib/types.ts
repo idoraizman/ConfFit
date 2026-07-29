@@ -148,11 +148,17 @@ export interface FramingReport {
   iterations: number
 }
 
-/** A single splice the UnifiedFixer asks code to apply. */
+/**
+ * A single splice the UnifiedFixer asks code to apply.
+ *
+ * Targets are deliberately narrow: "title", "abstract", "intro_opening" (the
+ * first paragraph of the introduction only) and "section:<Name>". Offering the
+ * whole introduction as a replace target would let a model that writes only an
+ * opening silently delete the rest of the section.
+ */
 export interface Edit {
-  /** "title" | "abstract" | "author_block" | "section:Introduction" */
   target: string
-  action: 'replace' | 'delete'
+  action: 'replace' | 'delete' | 'insert'
   new_text: string
   reason: string
 }
