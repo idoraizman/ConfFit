@@ -10,7 +10,9 @@ export const DESCRIPTION = [
   '',
   'What it CAN do: re-position a paper for a venue (which contribution to lead with, a rewritten title, abstract and introduction opening, grounded in the venue’s Call-for-Papers and the emphasis of its accepted papers); check the manuscript against the venue’s submission rules (page and abstract limits, citation style, required sections such as a Limitations or Reproducibility statement, and a double-blind anonymity scan); apply mechanical fixes itself (redacting the author block, removing contact emails, anonymising repository links, rephrasing self-referential citations, stripping acknowledgements); and merge everything into a single revised manuscript. It can profile a venue it has never seen by reading that venue’s Call-for-Papers — but only after the user approves it.',
   '',
-  'What it CANNOT do (constraints): it never submits anything anywhere. It reads plain text, not PDF or LaTeX binaries, so page counts are estimates from word count and it cannot verify a compiled template. It does not verify citations or check for plagiarism — that is deliberately out of scope. It will not add a venue to its knowledge base without an explicit go-ahead from the user, and it will not write a claim the manuscript does not already support: the reflection critic exists specifically to strike unsupported claims out of the proposed framing. Requests unrelated to preparing a paper for a venue get a short explanation and the correct prompt shape instead of an answer.',
+  'It reads LaTeX source natively as well as markdown and plain text: \\section, \\begin{abstract}, \\author, \\bibliographystyle and \\cite are all parsed, and the revision comes back as compilable LaTeX with the original macros, citations and maths untouched.',
+  '',
+  'What it CANNOT do (constraints): it never submits anything anywhere. It works on source text, not on a compiled PDF, so page counts are estimates from word count and it cannot check the rendered template. A \\bibliography{refs} line points at a file it cannot see, so the reference list is only checked if the .bib is pasted alongside. It does not verify citations or check for plagiarism — that is deliberately out of scope. It will not add a venue to its knowledge base without an explicit go-ahead from the user, and it will not write a claim the manuscript does not already support: the reflection critic exists specifically to strike unsupported claims out of the proposed framing. Requests unrelated to preparing a paper for a venue get a short explanation and the correct prompt shape instead of an answer.',
 ].join('\n')
 
 export const PURPOSE =
@@ -42,6 +44,8 @@ export const PROMPT_TEMPLATE = {
     'The four fields are parsed in code, so the manuscript itself is never sent to the routing model — only a short header.',
     'If the target venue is not yet in the knowledge base, the agent replies with a confirmation question instead of ingesting it. Reply "yes" (or paste the correct CFP link) as a follow-up prompt to resume.',
     'Send an optional "session_id" alongside "prompt" to keep follow-ups on the same thread. The web UI does this automatically.',
+    'The Paper field accepts LaTeX source, markdown, or plain text. LaTeX is parsed natively — \\section, \\begin{abstract}, \\author, \\bibliographystyle and \\cite are all understood — and the revised manuscript comes back as compilable LaTeX with the original macros intact. Paste the .bib alongside the .tex if you want the reference list checked, since \\bibliography{...} points at a file the agent cannot see.',
+    'PDF is not accepted: copy the text out of the viewer instead. If a paste arrives with its headings flattened, the Supervisor spends one extra call to recover the section structure and says so in the response.',
   ],
 }
 
@@ -65,5 +69,6 @@ export const ARCHITECTURE_SUMMARY = {
     'The reflection loop is capped at N ≤ 2, and the critic is only re-run when a further revision is still affordable.',
     'FormatComplianceAgent makes no LLM call at all when every rule passes and none is ambiguous.',
     'A full "both" run on a cached venue is typically 6 calls; the worst case, ingesting a new venue, is 9.',
+    'Manuscript structure is read in code for LaTeX, markdown and numbered headings alike; the model is asked to recover it only when deterministic parsing finds nothing, and it returns verbatim anchors that code locates, so edit positions stay exact.',
   ],
 }

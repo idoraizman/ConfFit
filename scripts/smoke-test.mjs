@@ -107,6 +107,8 @@ async function main() {
     const html = await res.text()
     check('page mentions Run Agent', /Run Agent/.test(html))
     check('page contains a textarea', /<textarea/.test(html))
+    check('page offers manuscript file attachment', /Attach manuscript/.test(html))
+    check('file input accepts text formats', /accept="[^"]*\.tex/.test(html))
   }
 
   // ── POST /api/execute — validation ─────────────────────────────────────────

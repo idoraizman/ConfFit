@@ -83,6 +83,11 @@ required:
 - **Calls are skipped when they would say nothing.** `FormatComplianceAgent` makes no LLM call
   at all if every rule passes and none is ambiguous; the reflection critic is not re-run when
   no further revision is affordable.
+- **Structure recovery is a fallback, not a pass.** Asking the model to read the manuscript's
+  shape on every run would cost ~10k prompt tokens and, worse, make a *checking* tool
+  non-deterministic — the same paper could report a different page count twice. Code parses
+  LaTeX, markdown and numbered headings; the model is only asked when that finds nothing, and
+  it returns verbatim anchors that code locates, so edit offsets stay exact.
 - **The reflection loop is capped** at N ≤ 2 in code, not by prompt instruction.
 
 A full `both` run on a cached venue is typically **6 LLM calls**; the worst case — ingesting a
@@ -117,6 +122,21 @@ Notes: <optional, e.g. "rejected from NeurIPS for being too applied">
 
 Free-form prompts work too — the Supervisor's routing call fills in whatever the template
 does not.
+
+### Input formats
+
+Paste the manuscript, or drop a `.txt` / `.md` / `.tex` file onto the composer in the web UI
+(the browser reads it and fills the `Paper:` field — the API contract stays `{"prompt": "..."}`).
+
+| Input | Handling |
+| --- | --- |
+| **LaTeX source** | Parsed natively: `\section`, `\subsection`, `\begin{abstract}`, `\title`, `\author`, `\thanks`, `\bibliographystyle` and `\cite`. Word counts exclude markup, maths and floats. The revision is returned as compilable LaTeX — macros, citations and equations survive untouched, anonymisation rewrites `\author{...}` in place, and a required section is inserted as `\section*{...}` before the bibliography. |
+| **Markdown / plain text** | `#` headings, `1. Introduction`, and ALL-CAPS headings. |
+| **Text copied out of a PDF** | Usually parses fine, since rendered headings survive the copy. If they do not, the Supervisor spends one call to recover the structure and says so in the response. |
+| **PDF / .docx** | Not accepted. Programmatic extraction mangles two-column layouts badly enough to corrupt section parsing; copying the text out of a viewer gives much cleaner input. |
+
+Paste `references.bib` alongside a `.tex` if you want the reference list checked —
+`\bibliography{references}` points at a file the agent cannot open.
 
 ## Running locally
 
@@ -187,8 +207,8 @@ Supabase schema: [`docs/supabase.sql`](docs/supabase.sql).
 ## Scope
 
 Deliberately **out of scope**: citation verification and plagiarism checking. ConfFit reads
-plain text, not PDF or compiled LaTeX, so page counts are estimates from word count and the
-format report says so on every run.
+source text, not a compiled PDF, so page counts are estimates from word count and the format
+report says so on every run.
 
 ## Layout
 
