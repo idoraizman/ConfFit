@@ -125,46 +125,126 @@ async function webFetch(url: string, maxChars: number): Promise<ToolResult> {
 }
 
 /**
- * Search via DuckDuckGo's no-JS endpoint. No API key, no cost. If it is
- * unavailable the ReAct loop still has the venue URL heuristics to fall back on.
+ * Keyless web search.
+ *
+ * Every engine here is a no-JS HTML endpoint, so there is no API key and no cost
+ * — and every one of them fails differently. DuckDuckGo answers a laptop with
+ * good hits but rate-limits repeated use and serves datacenter IPs an empty
+ * anomaly page, which is exactly where this runs in production. Bing's RSS view
+ * does answer from a datacenter, but it entity-matches rather than searches: ask
+ * it for "Eurographics 2029 call for papers submission guidelines" and it will
+ * offer pizza delivery.
+ *
+ * So we query all of them, merge, and let the caller rank and discard — a first
+ * past the post ordering would let whichever engine happened to answer decide
+ * the result, junk included. The engines that answered are reported so a silent
+ * degradation is visible in the trace.
  */
+interface SearchProvider {
+  name: string
+  url: (q: string) => string
+  /**
+   * `rss` reads <item><title>/<link> pairs; `ddg` reads DuckDuckGo's redirector
+   * links, whose `uddg=` parameter holds the real URL. Matching the redirector
+   * rather than a CSS class covers both DuckDuckGo endpoints, which differ in
+   * markup and even in attribute quoting.
+   */
+  kind: 'rss' | 'ddg'
+}
+
+const SEARCH_PROVIDERS: SearchProvider[] = [
+  // DuckDuckGo first in the merge order: when it answers, its hits are the most
+  // on-target. Bing is the one that answers from a datacenter at all.
+  { name: 'duckduckgo', kind: 'ddg', url: (q) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}` },
+  {
+    name: 'bing-rss',
+    kind: 'rss',
+    url: (q) => `https://www.bing.com/search?q=${encodeURIComponent(q)}&format=rss&mkt=en-US`,
+  },
+  { name: 'duckduckgo-lite', kind: 'ddg', url: (q) => `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}` },
+]
+
+/** Hosts that are the engine talking about itself rather than a venue page. */
+const SEARCH_NOISE = /(^|\.)(duckduckgo|bing|google|microsoft|yahoo)\.[a-z.]+$/i
+
+function extractResults(body: string, kind: SearchProvider['kind']): { title: string; url: string }[] {
+  const pairs: { title: string; url: string }[] =
+    kind === 'rss'
+      ? [...body.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<link>(https?:\/\/[^<]+)<\/link>/gi)].map(
+          (m) => ({ title: m[1], url: m[2] }),
+        )
+      : [...body.matchAll(/uddg=([^"'&]+)/gi)].map((m) => ({ title: '', url: decodeURIComponent(m[1]) }))
+
+  const results: { title: string; url: string }[] = []
+  const seen = new Set<string>()
+  for (const { title, url } of pairs) {
+    if (results.length >= 6) break
+    if (!/^https?:\/\//i.test(url)) continue
+    let host: string
+    try {
+      host = new URL(url).hostname
+    } catch {
+      continue
+    }
+    if (SEARCH_NOISE.test(host) || seen.has(url)) continue
+    seen.add(url)
+    results.push({ title: htmlToText(title).slice(0, 120) || host, url })
+  }
+  return results
+}
+
 async function webSearch(query: string): Promise<ToolResult> {
   if (!query.trim()) return { tool: 'web_search', ok: false, content: 'Empty query.' }
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-  try {
-    const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
-      headers: { 'User-Agent': UA },
-      signal: controller.signal,
-    })
-    if (!res.ok) return { tool: 'web_search', ok: false, content: `Search returned HTTP ${res.status}.` }
-    const html = await res.text()
 
-    const results: { title: string; url: string }[] = []
-    const re = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
-    let m: RegExpExecArray | null
-    while ((m = re.exec(html)) && results.length < 6) {
-      const raw = m[1]
-      // DuckDuckGo wraps hits in a redirector; unwrap the uddg parameter.
-      const unwrapped = raw.includes('uddg=')
-        ? decodeURIComponent(raw.split('uddg=')[1].split('&')[0])
-        : raw
-      if (/^https?:\/\//i.test(unwrapped)) {
-        results.push({ title: htmlToText(m[2]).slice(0, 120), url: unwrapped })
+  const attempts: string[] = []
+  const answered: string[] = []
+  const perProvider = await Promise.all(
+    SEARCH_PROVIDERS.map(async (provider) => {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+      try {
+        const res = await fetch(provider.url(query), {
+          headers: { 'User-Agent': UA, Accept: 'text/html,application/xml,*/*' },
+          signal: controller.signal,
+        })
+        if (!res.ok) {
+          attempts.push(`${provider.name}: HTTP ${res.status}`)
+          return []
+        }
+        const results = extractResults(await res.text(), provider.kind)
+        attempts.push(`${provider.name}: ${results.length} result(s)`)
+        if (results.length) answered.push(provider.name)
+        return results
+      } catch (e) {
+        attempts.push(`${provider.name}: ${(e as Error).message}`)
+        return []
+      } finally {
+        clearTimeout(timer)
       }
+    }),
+  )
+
+  // Round-robin so one engine's whole result page cannot bury another's first
+  // hit; the caller ranks properly afterwards.
+  const merged: { title: string; url: string }[] = []
+  const seen = new Set<string>()
+  for (let rank = 0; merged.length < 8; rank++) {
+    if (perProvider.every((list) => rank >= list.length)) break
+    for (const list of perProvider) {
+      const hit = list[rank]
+      if (!hit || seen.has(hit.url)) continue
+      seen.add(hit.url)
+      merged.push(hit)
     }
-    return {
-      tool: 'web_search',
-      ok: results.length > 0,
-      content: results.length
-        ? results.map((r, i) => `${i + 1}. ${r.title} — ${r.url}`).join('\n')
-        : 'No results.',
-      meta: { results },
-    }
-  } catch (e) {
-    return { tool: 'web_search', ok: false, content: `Search failed: ${(e as Error).message}` }
-  } finally {
-    clearTimeout(timer)
+  }
+
+  return {
+    tool: 'web_search',
+    ok: merged.length > 0,
+    content: merged.length
+      ? merged.map((r, i) => `${i + 1}. ${r.title} — ${r.url}`).join('\n')
+      : `No search engine returned results (${attempts.join('; ')}).`,
+    meta: { results: merged, engine: answered.join('+') || null, attempts },
   }
 }
 
