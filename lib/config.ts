@@ -68,5 +68,11 @@ export const config = {
     maxManuscriptChars: 150_000,
     /** CFP text kept for profile synthesis. */
     maxCfpChars: 14_000,
+    /**
+     * Manuscript sent to the structure-recovery fallback. Headings are spread
+     * through the whole document, so this window has to be wide — but the call
+     * only fires when deterministic parsing found nothing.
+     */
+    structureRecoveryChars: 30_000,
   },
 } as const

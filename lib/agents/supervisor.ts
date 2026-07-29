@@ -1,6 +1,7 @@
 import { summariseChecks } from '../checks'
 import { config } from '../config'
-import { parseManuscript, parsePrompt, routerDigest } from '../manuscript'
+import { parseManuscript, parsePrompt, routerDigest, withSections } from '../manuscript'
+import { looksUnparsed, recoverStructure } from './structure'
 import { MODULES } from '../modules'
 import { resolveVenue } from '../seed/venues'
 import { getStore } from '../store'
@@ -161,7 +162,18 @@ async function run(
   // Truncation is reported rather than applied silently: a cut manuscript loses
   // its reference list, which would make the format report quietly wrong.
   const truncatedChars = Math.max(0, paperText.length - config.limits.maxManuscriptChars)
-  const manuscript = parseManuscript(paperText.slice(0, config.limits.maxManuscriptChars))
+  let manuscript = parseManuscript(paperText.slice(0, config.limits.maxManuscriptChars))
+
+  // Only when code could not find the paper's shape at all — typically text
+  // copied out of a rendered PDF — spend one call to recover it.
+  let structureRecovered = false
+  if (looksUnparsed(manuscript)) {
+    const sections = await recoverStructure(tracer, manuscript)
+    if (sections.length) {
+      manuscript = withSections(manuscript, sections)
+      structureRecovered = true
+    }
+  }
   const topic = [manuscript.title, manuscript.abstract].filter(Boolean).join('. ').slice(0, 400)
 
   // ── ConferenceProfiler ─────────────────────────────────────────────────────
@@ -229,6 +241,7 @@ async function run(
   const response = renderResponse({
     venue: profile.venue,
     truncatedChars,
+    structureRecovered,
     profileNote: profileNote(profile),
     summary: typeof merge.summary === 'string' && merge.summary.trim() ? merge.summary.trim() : fallbackSummary(counts, framing),
     framing,
@@ -255,6 +268,7 @@ async function run(
 function renderResponse(a: {
   venue: string
   truncatedChars: number
+  structureRecovered: boolean
   profileNote: string
   summary: string
   framing: FramingReport | null
@@ -266,6 +280,13 @@ function renderResponse(a: {
   usage: { llm_calls: number; prompt_tokens: number; completion_tokens: number }
 }): string {
   const out: string[] = [`# ConfFit — ${a.venue}`, '', a.summary, '', a.profileNote]
+
+  if (a.structureRecovered) {
+    out.push(
+      '',
+      'ℹ️ **Section structure was inferred.** The manuscript arrived without detectable headings — typical of text copied out of a PDF — so the section boundaries below were recovered by the model rather than read off the source. Section-level findings are best-effort; paste the LaTeX or markdown source for exact results.',
+    )
+  }
 
   if (a.truncatedChars > 0) {
     const kept = Math.round(config.limits.maxManuscriptChars / 1000)
