@@ -52,8 +52,14 @@ export interface FormatRules {
   citation_style: CitationStyle
   /** Human-readable template name, e.g. "ICLR 2027 LaTeX style (natbib)". */
   template: string | null
-  /** Sections the venue expects to be present. */
+  /** Sections whose absence is a rule violation (ACL desk-rejects without one). */
   required_sections: string[]
+  /**
+   * Sections the venue encourages but does not mandate. Kept separate because
+   * reporting "strongly encouraged" as a failure is an over-claim — it sends
+   * authors chasing a problem the venue does not actually have.
+   */
+  recommended_sections: string[]
   /** Anything the profiler could not resolve; drives the ReAct rules_lookup. */
   unresolved: string[]
 }

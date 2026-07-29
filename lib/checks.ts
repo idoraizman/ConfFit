@@ -193,9 +193,10 @@ export function runFormatChecks(m: ParsedManuscript, rules: FormatRules): CheckO
     })
   }
 
-  // ── Required sections ──────────────────────────────────────────────────────
+  // ── Required and recommended sections ──────────────────────────────────────
+  const present = new Set(m.sections.map((s) => s.name.toLowerCase()))
+
   if (rules.required_sections.length) {
-    const present = new Set(m.sections.map((s) => s.name.toLowerCase()))
     const missing = rules.required_sections.filter((r) => !present.has(r.toLowerCase()))
     checks.push({
       rule: 'required_sections',
@@ -205,6 +206,20 @@ export function runFormatChecks(m: ParsedManuscript, rules: FormatRules): CheckO
         : `All required sections present: ${rules.required_sections.join(', ')}.`,
       suggestion: missing.length
         ? `Add ${missing.join(' and ')} — the venue requires ${missing.length > 1 ? 'them' : 'it'}.`
+        : 'No action needed.',
+    })
+  }
+
+  if (rules.recommended_sections.length) {
+    const missing = rules.recommended_sections.filter((r) => !present.has(r.toLowerCase()))
+    checks.push({
+      rule: 'recommended_sections',
+      status: missing.length ? 'warn' : 'pass',
+      detail: missing.length
+        ? `The venue encourages but does not require: ${missing.join(', ')}. ${missing.length > 1 ? 'They are' : 'It is'} absent.`
+        : `All encouraged sections present: ${rules.recommended_sections.join(', ')}.`,
+      suggestion: missing.length
+        ? `Adding ${missing.join(' and ')} is optional and typically excluded from the page limit; reviewers tend to look for ${missing.length > 1 ? 'them' : 'it'}.`
         : 'No action needed.',
     })
   }
