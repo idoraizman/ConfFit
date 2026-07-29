@@ -1,6 +1,14 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ACCEPTED_EXTENSIONS,
+  MAX_FILE_BYTES,
+  describeFile,
+  isAcceptedFilename,
+  looksBinary,
+  withPaper,
+} from '@/lib/compose'
 import { renderMarkdown } from '@/lib/markdown'
 import type { ExecuteResult, Step } from '@/lib/types'
 
@@ -23,6 +31,47 @@ export default function Page() {
   const [busy, setBusy] = useState(false)
   const sessionId = useSessionId()
   const bottom = useRef<HTMLDivElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const [dragging, setDragging] = useState(false)
+  const [loaded, setLoaded] = useState<string | null>(null)
+  const [fileError, setFileError] = useState<string | null>(null)
+
+  /** Reads a dropped or chosen manuscript into the Paper: field. */
+  const loadFile = useCallback(async (file: File) => {
+    setFileError(null)
+    setLoaded(null)
+
+    if (!isAcceptedFilename(file.name)) {
+      setFileError(
+        `${file.name} is not a text file. ConfFit reads ${ACCEPTED_EXTENSIONS.join(', ')}. ` +
+          'For a PDF, open it and copy the text in — extraction from PDF mangles two-column layouts.',
+      )
+      return
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setFileError(`${file.name} is ${Math.round(file.size / 1_000_000)} MB; the limit is 2 MB.`)
+      return
+    }
+
+    let text: string
+    try {
+      text = await file.text()
+    } catch (e) {
+      setFileError(`Could not read ${file.name}: ${(e as Error).message}`)
+      return
+    }
+    if (!text.trim()) {
+      setFileError(`${file.name} is empty.`)
+      return
+    }
+    if (looksBinary(text)) {
+      setFileError(`${file.name} does not look like plain text. Paste the manuscript text instead.`)
+      return
+    }
+
+    setPrompt((current) => withPaper(current, text))
+    setLoaded(describeFile(file.name, text))
+  }, [])
 
   useEffect(() => {
     if (turns.length) bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -69,7 +118,26 @@ export default function Page() {
         <a href="/api/model_architecture" target="_blank" rel="noreferrer">GET /api/model_architecture</a>
       </nav>
 
-      <div className="panel">
+      <div
+        className={dragging ? 'panel dragging' : 'panel'}
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes('Files')) {
+            e.preventDefault()
+            setDragging(true)
+          }
+        }}
+        onDragLeave={(e) => {
+          // Only clear when the pointer actually leaves the panel, not when it
+          // crosses into a child element.
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+        }}
+        onDrop={(e) => {
+          if (!e.dataTransfer.files?.length) return
+          e.preventDefault()
+          setDragging(false)
+          void loadFile(e.dataTransfer.files[0])
+        }}
+      >
         <label htmlFor="prompt" className="hint">
           Prompt
         </label>
@@ -86,11 +154,28 @@ export default function Page() {
             }
           }}
         />
+
+        {dragging && <div className="dropveil">Drop the manuscript to fill the Paper field</div>}
         <div className="row">
           <button onClick={() => void run()} disabled={busy || !prompt.trim()}>
             {busy && <span className="spinner" />}
             {busy ? 'Running…' : 'Run Agent'}
           </button>
+          <button className="ghost" onClick={() => fileInput.current?.click()} disabled={busy}>
+            Attach manuscript…
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept={ACCEPTED_EXTENSIONS.join(',')}
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) void loadFile(file)
+              // Reset so choosing the same file twice fires onChange again.
+              e.target.value = ''
+            }}
+          />
           <button className="ghost" onClick={() => setPrompt(TEMPLATE)} disabled={busy}>
             Insert template
           </button>
@@ -99,11 +184,16 @@ export default function Page() {
               Clear history
             </button>
           )}
-          <span className="hint">
-            ⌘/Ctrl + Enter to run. Follow-up prompts stay in the same session — reply “yes” to approve adding an unknown
-            venue.
-          </span>
         </div>
+
+        {loaded && <p className="filenote ok">Loaded {loaded}</p>}
+        {fileError && <p className="filenote bad">{fileError}</p>}
+
+        <p className="hint">
+          Drop a {ACCEPTED_EXTENSIONS.slice(0, 3).join(' / ')} file anywhere on this panel to fill the{' '}
+          <code>Paper:</code> field, or paste the text in directly. ⌘/Ctrl + Enter runs. Follow-up prompts stay in the
+          same session — reply “yes” to approve adding an unknown venue.
+        </p>
       </div>
 
       {turns.map((turn) => (

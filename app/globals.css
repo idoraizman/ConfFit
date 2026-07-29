@@ -107,6 +107,66 @@ nav.links a:hover {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 16px;
+  position: relative;
+}
+
+.panel.dragging {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Covers the panel while a file is over it. pointer-events must stay off, or
+   the veil itself would fire dragleave and flicker the highlight. */
+.dropveil {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  border: 2px dashed var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.filenote {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+}
+
+.filenote.ok {
+  color: var(--ok);
+}
+
+.filenote.bad {
+  color: var(--bad);
+}
+
+.filenote::before {
+  content: "";
+  margin-right: 6px;
+}
+
+.filenote.ok::before {
+  content: "✓";
+}
+
+.filenote.bad::before {
+  content: "✗";
+}
+
+p.hint {
+  margin: 10px 0 0;
+}
+
+p.hint code {
+  font: 12px var(--mono);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
 }
 
 textarea {
