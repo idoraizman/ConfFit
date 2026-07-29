@@ -302,6 +302,13 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
 const GUIDE_WORDS = /author|instruction|guide|format|submission|camera.?ready|call.?for.?paper|cfp/i
 const VENUE_WORDS = /conference|symposium|workshop|proceedings|openreview|acm\b|ieee|springer|usenix/i
 const AGGREGATORS = /wikicfp|github|reddit|zhihu|baidu|quora|x\.com|twitter|facebook|linkedin|medium\.com|wikipedia/i
+/**
+ * Catalogues that list thousands of venues. They rank well for a venue's name
+ * and never state its submission rules, so they are listed for the author but
+ * never proposed — from a datacenter these are much of what Bing returns.
+ */
+const VENUE_INDEXES =
+  /dl\.acm\.org|ieeexplore|link\.springer|dblp|semanticscholar|researchgate|academia\.edu|conference-schedule|paperpilot|deadlines?\b|guide2research|core\.edu\.au/i
 /** Side tracks whose rules are not the ones a full paper is submitted under. */
 const SIDE_TRACKS = /art.?paper|art.?gallery|poster|course|doctoral|consortium|demo|panel|keynote|showcase|festival/i
 
@@ -400,6 +407,7 @@ function nameCoverage(r: { title: string; url: string }, tokens: string[]): numb
 function looksLikeVenuePage(r: { title: string; url: string }, tokens: string[]): boolean {
   const target = `${r.url} ${r.title}`
   if (nameCoverage(r, tokens) < 2 / 3) return false
+  if (VENUE_INDEXES.test(r.url) || AGGREGATORS.test(r.url)) return false
   // A bare landing page cannot hold submission rules, and proposing one costs
   // the author a round trip to find that out. Bing from a datacenter returns
   // little else, so this is the common production case, not an edge case.
