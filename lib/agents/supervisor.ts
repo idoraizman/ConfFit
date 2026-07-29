@@ -26,7 +26,7 @@ Return a JSON object only:
  "target_conference":"<venue name as the user gave it, or null>",
  "task":"framing"|"format"|"both",
  "is_approval_reply":true|false,
- "provided_url":"<a call-for-papers URL the user pasted, or null>",
+ "provided_url":"<only a URL the user gave as the venue or its call-for-papers; null if the only URLs are inside the manuscript text>",
  "reason":"<why the request is out of scope, else null>"}
 Guidance:
 - in_scope is false only if the request has nothing to do with preparing or adapting an academic paper for a venue.

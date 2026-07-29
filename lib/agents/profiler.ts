@@ -125,14 +125,17 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
   }
 
   // ── Cache miss on an unknown venue: ask before ingesting anything ──────────
-  let proposed = guessCfpUrl(resolved, input.originalPrompt)
+  // Only a URL the user gave as the target conference counts as a proposal.
+  let proposed = input.providedUrl ?? guessCfpUrl(resolved, input.venueRaw)
   let searchNote: string | null = null
+  let alternatives: { title: string; url: string }[] = []
   if (!proposed) {
     const hit = await callTool('web_search', {
       query: `${resolved.display} call for papers submission guidelines page limit anonymous`,
     })
-    const first = (hit.meta?.results as { url: string }[] | undefined)?.[0]
-    proposed = first?.url ?? null
+    const results = (hit.meta?.results as { title: string; url: string }[] | undefined) ?? []
+    proposed = results[0]?.url ?? null
+    alternatives = results.slice(1, 4)
     searchNote = hit.ok ? hit.content : 'web_search returned no candidates.'
   }
 
@@ -147,8 +150,12 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
   }
   await store.putPending(pending)
 
+  const altBlock = alternatives.length
+    ? `\n\nOther candidates I found, if that one is wrong:\n${alternatives.map((a) => `- ${a.url}`).join('\n')}`
+    : ''
+
   const question = proposed
-    ? `I don't have guidelines for **${resolved.display}** in the knowledge base yet.\n\nMay I fetch ${proposed} and add it? Reply **yes** to approve, or paste the correct Call-for-Papers link.\n\nNothing has been written to the knowledge base.`
+    ? `I don't have guidelines for **${resolved.display}** in the knowledge base yet.\n\nMay I fetch ${proposed} and add it? Reply **yes** to approve, or paste the correct Call-for-Papers link.${altBlock}\n\nNothing has been written to the knowledge base.`
     : `I don't have guidelines for **${resolved.display}** in the knowledge base, and I could not find a Call-for-Papers page for it.\n\nPaste the direct link to the venue's call-for-papers or author-guidelines page and I will read it.\n\nNothing has been written to the knowledge base.`
 
   tracer.addDeterministic(

@@ -424,11 +424,16 @@ export function seedCorpus(resolved: ResolvedVenue): { id: string; text: string;
   }))
 }
 
-/** Best-guess CFP URL used by the human-in-the-loop confirmation question. */
-export function guessCfpUrl(resolved: ResolvedVenue, raw: string): string | null {
-  const inPrompt = raw.match(/https?:\/\/\S+/)?.[0]
-  if (inPrompt) return inPrompt.replace(/[).,]+$/, '')
-  const seed = seedFor(resolved.family)
-  if (seed) return seed.cfp_url
-  return null
+/**
+ * Best-guess CFP URL for the human-in-the-loop confirmation question.
+ *
+ * `venueField` must be only what the user wrote as the target conference — not
+ * the whole prompt. Scanning the prompt would pick up the first URL in the
+ * manuscript (a repository link, a dataset link) and propose ingesting that as
+ * if it were the venue's call-for-papers.
+ */
+export function guessCfpUrl(resolved: ResolvedVenue, venueField: string): string | null {
+  const explicit = venueField.match(/https?:\/\/\S+/)?.[0]
+  if (explicit) return explicit.replace(/[).,]+$/, '')
+  return seedFor(resolved.family)?.cfp_url ?? null
 }
