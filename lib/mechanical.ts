@@ -1,4 +1,11 @@
-import { innerSpan } from './latex'
+import {
+  bibliographyStyleOf,
+  innerSpan,
+  insertPackage,
+  stripCommand,
+  stripPackage,
+  usedPackages,
+} from './latex'
 import { parseManuscript } from './manuscript'
 import type { Edit, FormatRules, ParsedManuscript } from './types'
 
@@ -13,6 +20,24 @@ const EMAIL = /\b[\w.+-]+@[\w-]+\.[\w.-]{2,}\b/g
 const REPO_URL =
   /\bhttps?:\/\/(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org|huggingface\.co)\/[\w.-]+(?:\/[\w.-]+)?/gi
 
+/** Whole-line `\setlength{\textwidth}{...}` style overrides. */
+const LAYOUT_LENGTH_LINE =
+  /^[ \t]*\\setlength\s*\{\s*\\(?:textwidth|textheight|topmargin|oddsidemargin|evensidemargin|hoffset|voffset|marginparwidth)\s*\}\s*\{[^}]*\}[ \t]*\n?/gm
+
+/** Drops one option from `\usepackage[a,b]{style}`, removing `[]` when empty. */
+function removeStyleOption(src: string, pkg: string | null, option: string): string {
+  if (!pkg) return src
+  const re = new RegExp(`\\\\usepackage\\s*\\[([^\\]]*)\\]\\s*\\{\\s*${pkg}\\s*\\}`, 'g')
+  return src.replace(re, (whole, opts: string) => {
+    const kept = opts
+      .split(',')
+      .map((o) => o.trim())
+      .filter((o) => o && o !== option)
+    if (kept.length === opts.split(',').map((o) => o.trim()).filter(Boolean).length) return whole
+    return kept.length ? `\\usepackage[${kept.join(', ')}]{${pkg}}` : `\\usepackage{${pkg}}`
+  })
+}
+
 export interface MechanicalResult {
   text: string
   applied: string[]
@@ -21,6 +46,61 @@ export interface MechanicalResult {
 export function applyMechanicalFixes(m: ParsedManuscript, rules: FormatRules): MechanicalResult {
   let text = m.raw
   const applied: string[] = []
+
+  // ── Template setup ─────────────────────────────────────────────────────────
+  // Putting the submission into the venue's format is mechanical, so it happens
+  // here rather than costing a model call.
+  const spec = rules.template_spec
+  if (m.format === 'latex' && spec) {
+    if (spec.style_package && !usedPackages(text).some((p) => p.name === spec.style_package)) {
+      text = insertPackage(text, spec.style_package)
+      applied.push(
+        `Loaded the venue style file (\\usepackage{${spec.style_package}}). Put ${spec.style_package}.sty next to your .tex before compiling${
+          spec.template_url ? ` — download it from ${spec.template_url}` : ''
+        }.`,
+      )
+    }
+
+    if (spec.forbids_layout_override) {
+      const before = text
+      // geometry and \geometry{...} must go together: leaving either behind is
+      // a build error, which would be worse than the finding it fixes.
+      text = stripPackage(text, 'geometry')
+      text = stripCommand(text, 'geometry')
+      text = text.replace(LAYOUT_LENGTH_LINE, '')
+      if (text !== before) {
+        applied.push('Removed page-geometry overrides; the venue style file fixes the text block.')
+      }
+    }
+
+    if (spec.bibliography_style && bibliographyStyleOf(text) !== spec.bibliography_style) {
+      const had = bibliographyStyleOf(text)
+      text = had
+        ? text.replace(/\\bibliographystyle\s*\{[^}]*\}/, `\\bibliographystyle{${spec.bibliography_style}}`)
+        : text.replace(/(\\bibliography\s*\{)/, `\\bibliographystyle{${spec.bibliography_style}}\n$1`)
+      applied.push(
+        had
+          ? `Changed \\bibliographystyle{${had}} to {${spec.bibliography_style}}.`
+          : `Added \\bibliographystyle{${spec.bibliography_style}}.`,
+      )
+    }
+
+    if (rules.anonymous) {
+      for (const macro of spec.forbidden_macros) {
+        const name = macro.replace(/^\\/, '')
+        const before = text
+        text = stripCommand(text, name)
+        if (text !== before) applied.push(`Removed ${macro} — it de-anonymises a double-blind submission.`)
+      }
+      for (const opt of spec.deanonymising_options) {
+        const before = text
+        text = removeStyleOption(text, spec.style_package, opt)
+        if (text !== before) {
+          applied.push(`Removed the [${opt}] style option — it prints author names on a double-blind submission.`)
+        }
+      }
+    }
+  }
 
   if (rules.anonymous) {
     // Author / affiliation block → anonymous placeholder. For LaTeX the block
