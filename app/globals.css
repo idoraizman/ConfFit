@@ -186,12 +186,55 @@ textarea:focus {
   outline-offset: -1px;
 }
 
+textarea.short {
+  min-height: 84px;
+}
+
 .row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-top: 12px;
+}
+
+/* ── Reply composer ─────────────────────────────────────────────────────── */
+
+/*
+ * The transcript grows downwards and the request panel stays at the top, so
+ * without a composer at the end of the conversation the agent's questions look
+ * unanswerable: the only input is scrolled off the screen.
+ */
+.reply {
+  margin-top: 24px;
+}
+
+.reply.gated {
+  border-color: var(--gate);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--gate) 14%, transparent);
+}
+
+.gatenote {
+  margin: 4px 0 12px;
+  font-size: 13px;
+  color: var(--gate);
+}
+
+.gatenote code {
+  font: 12px var(--mono);
+  overflow-wrap: anywhere;
+}
+
+/* Specific enough to win over `button.ghost`, which is declared after this. */
+button.ghost.approve {
+  color: var(--gate);
+  border-color: var(--gate);
+}
+
+button.ghost.approve:hover:not(:disabled) {
+  color: #fff;
+  background: var(--gate);
+  border-color: var(--gate);
 }
 
 button {

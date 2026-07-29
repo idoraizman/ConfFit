@@ -27,14 +27,20 @@ interface Turn {
 
 export default function Page() {
   const [prompt, setPrompt] = useState(TEMPLATE)
+  const [reply, setReply] = useState('')
   const [turns, setTurns] = useState<Turn[]>([])
   const [busy, setBusy] = useState(false)
   const sessionId = useSessionId()
   const bottom = useRef<HTMLDivElement>(null)
+  const replyBox = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
   const [loaded, setLoaded] = useState<string | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
+
+  const last = turns[turns.length - 1]
+  /** The human-in-the-loop gate, read out of the trace the run already returns. */
+  const gate = gateOf(last?.result ?? null)
 
   /** Reads a dropped or chosen manuscript into the Paper: field. */
   const loadFile = useCallback(async (file: File) => {
@@ -77,27 +83,53 @@ export default function Page() {
     if (turns.length) bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [turns])
 
+  // When the agent asks something, put the cursor where the answer goes: the
+  // gate is only a conversation if the next turn is obviously available.
+  useEffect(() => {
+    if (gate && !busy) replyBox.current?.focus()
+  }, [gate, busy])
+
+  /** Posts one prompt as the next turn of this session. */
+  const send = useCallback(
+    async (text: string) => {
+      const body = text.trim()
+      if (!body) return
+      const id = Date.now()
+      setTurns((t) => [...t, { id, prompt: body, result: null }])
+      setBusy(true)
+      try {
+        const res = await fetch('/api/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: body, session_id: sessionId }),
+        })
+        const parsed = (await res.json()) as ExecuteResult
+        setTurns((t) => t.map((x) => (x.id === id ? { ...x, result: parsed } : x)))
+      } catch (e) {
+        setTurns((t) => t.map((x) => (x.id === id ? { ...x, transportError: (e as Error).message } : x)))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [sessionId],
+  )
+
   async function run() {
     const text = prompt.trim()
     if (!text || busy) return
-    const id = Date.now()
-    setTurns((t) => [...t, { id, prompt: text, result: null }])
-    setBusy(true)
     setPrompt('')
+    await send(text)
+  }
 
-    try {
-      const res = await fetch('/api/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: text, session_id: sessionId }),
-      })
-      const body = (await res.json()) as ExecuteResult
-      setTurns((t) => t.map((x) => (x.id === id ? { ...x, result: body } : x)))
-    } catch (e) {
-      setTurns((t) => t.map((x) => (x.id === id ? { ...x, transportError: (e as Error).message } : x)))
-    } finally {
-      setBusy(false)
-    }
+  /**
+   * Sends a follow-up. The reply goes over the wire exactly as typed: the
+   * Supervisor recognises a bare `yes` and a bare URL in code, and either would
+   * stop being recognised if the UI wrapped it in anything.
+   */
+  async function sendReply(text: string) {
+    if (busy || !text.trim()) return
+    setReply('')
+    await send(text)
   }
 
   return (
@@ -191,14 +223,67 @@ export default function Page() {
 
         <p className="hint">
           Drop a {ACCEPTED_EXTENSIONS.slice(0, 3).join(' / ')} file anywhere on this panel to fill the{' '}
-          <code>Paper:</code> field, or paste the text in directly. ⌘/Ctrl + Enter runs. Follow-up prompts stay in the
-          same session — reply “yes” to approve adding an unknown venue.
+          <code>Paper:</code> field, or paste the text in directly. ⌘/Ctrl + Enter runs. Answers appear below, each with
+          a reply box — an unknown venue is added only after you approve it there.
         </p>
       </div>
 
       {turns.map((turn) => (
         <TurnView key={turn.id} turn={turn} />
       ))}
+
+      {turns.length > 0 && (
+        <div className={gate ? 'panel reply gated' : 'panel reply'}>
+          <label htmlFor="reply" className="hint">
+            {gate ? 'Your answer' : 'Reply — same session, no need to resend the paper'}
+          </label>
+
+          {gate?.proposedUrl && (
+            <p className="gatenote">
+              Waiting on you: may ConfFit read <code>{gate.proposedUrl}</code> and add {gate.venue ?? 'that venue'} to
+              the knowledge base?
+            </p>
+          )}
+
+          <textarea
+            id="reply"
+            ref={replyBox}
+            className="short"
+            value={reply}
+            onChange={(e) => setReply(e.target.value)}
+            placeholder={
+              gate
+                ? 'yes  ·  or a link to the call-for-papers  ·  or paste the venue guidelines here'
+                : 'A follow-up question, an approval, a link, or pasted venue guidelines'
+            }
+            spellCheck={false}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault()
+                void sendReply(reply)
+              }
+            }}
+          />
+
+          <div className="row">
+            <button onClick={() => void sendReply(reply)} disabled={busy || !reply.trim()}>
+              {busy && <span className="spinner" />}
+              {busy ? 'Running…' : 'Send reply'}
+            </button>
+            {gate?.proposedUrl && (
+              <button className="ghost approve" onClick={() => void sendReply('yes')} disabled={busy}>
+                Yes — fetch it and continue
+              </button>
+            )}
+          </div>
+
+          <p className="hint">
+            {gate
+              ? 'Pasting the guidelines text is the sure route — the profile is built from exactly what you paste and nothing is fetched. ⌘/Ctrl + Enter sends.'
+              : 'The paper stays attached to this session, so a follow-up only needs the new information. ⌘/Ctrl + Enter sends.'}
+          </p>
+        </div>
+      )}
       <div ref={bottom} />
 
       <footer className="foot">
@@ -207,6 +292,26 @@ export default function Page() {
       </footer>
     </div>
   )
+}
+
+/**
+ * Reads the human-in-the-loop gate out of a finished turn.
+ *
+ * The gate is already fully described in the `steps` trace the API returns —
+ * `ask_user` with the question and `proposed_url` with the candidate — so the UI
+ * can offer a one-click approval without adding a field to the response contract.
+ */
+function gateOf(result: ExecuteResult | null): { proposedUrl: string | null; venue: string | null } | null {
+  if (!result || result.status !== 'ok') return null
+  for (let i = result.steps.length - 1; i >= 0; i--) {
+    const r = result.steps[i].response as { ask_user?: unknown; proposed_url?: unknown; venue?: unknown }
+    if (typeof r.ask_user !== 'string') continue
+    return {
+      proposedUrl: typeof r.proposed_url === 'string' && r.proposed_url ? r.proposed_url : null,
+      venue: typeof r.venue === 'string' ? r.venue : null,
+    }
+  }
+  return null
 }
 
 function TurnView({ turn }: { turn: Turn }) {
