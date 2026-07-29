@@ -1,3 +1,4 @@
+import { isLatexSource, parseLatexManuscript, stripLatex } from './latex'
 import type { CitationStyle, ParsedManuscript, Section, Task } from './types'
 
 /**
@@ -50,6 +51,14 @@ function isHeading(line: string): { name: string } | null {
 
   const canonical = canonicalise(label)
   if (canonical) return { name: canonical }
+
+  // Reject maths. Numbered display equations ("2 log 10000", "+γ ℓ(α)") look
+  // exactly like numbered headings to the rules below, and text extracted from
+  // a PDF is full of them.
+  const letters = (label.match(/[A-Za-z]/g) ?? []).length
+  const digits = (label.match(/\d/g) ?? []).length
+  if (letters < 3 || digits > letters) return null
+  if (/[=<>≤≥∑∏∫±×·→←↦∈∉⊂∪∩√∞]|\\[a-zA-Z]+|[α-ωΑ-Ω]/.test(label)) return null
 
   // Unrecognised but clearly heading-shaped: markdown hash, or numbered and
   // short, or ALL CAPS. Body sentences are excluded by the punctuation test.
@@ -107,6 +116,11 @@ function splitReferences(block: string): string[] {
 
 export function parseManuscript(raw: string): ParsedManuscript {
   const text = raw.replace(/\r\n?/g, '\n')
+
+  // LaTeX source has none of the cues below — no markdown headings, no bracket
+  // citations, usually no inline bibliography — so it gets its own parser.
+  if (isLatexSource(text)) return parseLatexManuscript(text)
+
   const lines = text.split('\n')
 
   // Locate headings with their character offsets.
@@ -120,7 +134,7 @@ export function parseManuscript(raw: string): ParsedManuscript {
 
   const sections: Section[] = marks.map((m, i) => {
     const end = i + 1 < marks.length ? marks[i + 1].start : text.length
-    return { name: m.name, body: text.slice(m.bodyStart, end).trim(), start: m.start, end }
+    return { name: m.name, body: text.slice(m.bodyStart, end).trim(), start: m.start, end, level: 1 }
   })
 
   // Everything before the first heading is the front matter: title + authors.
@@ -157,6 +171,7 @@ export function parseManuscript(raw: string): ParsedManuscript {
 
   return {
     raw: text,
+    format: 'text',
     title,
     author_block: authorBlock,
     abstract: abstract ? abstract.trim() : null,
@@ -169,6 +184,40 @@ export function parseManuscript(raw: string): ParsedManuscript {
     // page once figures and whitespace are accounted for. This is an estimate
     // and the format report says so.
     estimated_pages: Math.max(1, Math.ceil((countWords(body) || countWords(text)) / 750)),
+  }
+}
+
+/**
+ * Rebuilds a manuscript around a recovered section list.
+ *
+ * Everything derived from sections — the abstract, the reference list, the body
+ * word count and therefore the page estimate — has to be recomputed, otherwise
+ * the format report would still be reporting the failed parse.
+ */
+export function withSections(m: ParsedManuscript, sections: Section[]): ParsedManuscript {
+  const find = (n: string) => sections.find((s) => s.name.toLowerCase() === n.toLowerCase())
+  const abstractSec = find('Abstract')
+  const refsSec = find('References')
+
+  const body = sections
+    .filter((s) => !/^(references|bibliography|appendix)/i.test(s.name))
+    .map((s) => s.body)
+    .join('\n')
+  const bodyWords = countWords(body)
+
+  // Text before the first recovered heading is the front matter.
+  const frontMatter = sections.length ? m.raw.slice(0, sections[0].start) : ''
+  const frontLines = frontMatter.split('\n').map((l) => l.trim()).filter(Boolean)
+
+  return {
+    ...m,
+    sections,
+    title: m.title ?? frontLines[0] ?? null,
+    author_block: m.author_block ?? (frontLines.length > 1 ? frontLines.slice(1).join('\n') : null),
+    abstract: abstractSec ? abstractSec.body.replace(/^abstract\b[:.]?\s*/i, '').trim() : m.abstract,
+    references: refsSec ? splitReferences(refsSec.body.replace(/^references\b[:.]?\s*/i, '')) : m.references,
+    body_word_count: bodyWords || m.body_word_count,
+    estimated_pages: Math.max(1, Math.ceil((bodyWords || m.body_word_count) / 750)),
   }
 }
 
@@ -257,17 +306,52 @@ export function routerDigest(prompt: string, parsed: ParsedPrompt): string {
  * The slice FramingAgent needs: title, abstract, contribution bullets and the
  * opening of the introduction. Never the whole manuscript.
  */
+/**
+ * The full prose of a named section, including its subsections.
+ *
+ * A LaTeX \section{Introduction} followed immediately by \subsection{...} has
+ * an empty body of its own; the text everyone means by "the introduction" lives
+ * one level down.
+ */
+export function sectionProse(m: ParsedManuscript, name: string): string {
+  const idx = m.sections.findIndex((s) => s.name === name)
+  if (idx === -1) return ''
+
+  const head = m.sections[idx]
+  const parts = [head.body]
+  for (let i = idx + 1; i < m.sections.length; i++) {
+    if (m.sections[i].level <= head.level) break
+    parts.push(m.sections[i].body)
+  }
+  const joined = parts.filter((p) => p.trim()).join('\n\n')
+  return m.format === 'latex' ? stripLatex(joined) : joined
+}
+
 export function framingDigest(m: ParsedManuscript): string {
+  // The model reasons about the argument, not the markup: send it prose even
+  // when the source is LaTeX. Fewer tokens, and no macro noise to imitate.
   const intro = m.sections.find((s) => s.name === 'Introduction')
-  const contributions = intro
-    ? (intro.body.match(/^\s*(?:[-*•]|\(?\d+[.)])\s+.{20,300}$/gm) ?? []).slice(0, 6)
-    : []
+  const introBody = sectionProse(m, 'Introduction')
+
+  // Contribution bullets: \item in LaTeX, "-" or "1." in prose.
+  const introSource = intro ? m.raw.slice(intro.start, intro.start + 6000) : ''
+  const contributions = [
+    ...(introSource.match(/\\item\s+[\s\S]{20,300}?(?=\\item|\\end\s*\{)/g) ?? []).map((s) =>
+      stripLatex(s.replace(/^\\item\s*/, '')),
+    ),
+    ...(introBody.match(/^\s*(?:[-*•]|\(?\d+[.)])\s+.{20,300}$/gm) ?? []),
+  ]
+    .map((c) => c.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, 6)
+
   return [
     `Title: ${m.title ?? '(none given)'}`,
     `Abstract: ${(m.abstract ?? '(none given)').slice(0, 2200)}`,
-    contributions.length ? `Stated contributions:\n${contributions.join('\n')}` : null,
-    intro ? `Introduction opening: ${intro.body.slice(0, 1200)}` : null,
+    contributions.length ? `Stated contributions:\n${contributions.map((c) => `- ${c.trim()}`).join('\n')}` : null,
+    introBody ? `Introduction opening: ${introBody.slice(0, 1200)}` : null,
     `Sections present: ${m.sections.map((s) => s.name).join(', ') || '(unstructured text)'}`,
+    m.format === 'latex' ? 'Source format: LaTeX' : null,
   ]
     .filter(Boolean)
     .join('\n\n')

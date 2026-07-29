@@ -1,3 +1,4 @@
+import { innerSpan } from './latex'
 import { parseManuscript } from './manuscript'
 import type { Edit, FormatRules, ParsedManuscript } from './types'
 
@@ -22,16 +23,26 @@ export function applyMechanicalFixes(m: ParsedManuscript, rules: FormatRules): M
   const applied: string[] = []
 
   if (rules.anonymous) {
-    // Author / affiliation block → anonymous placeholder.
+    // Author / affiliation block → anonymous placeholder. For LaTeX the block
+    // is the contents of \author{...}, so the replacement has to stay valid
+    // LaTeX: line breaks are \\, not newlines.
     if (m.author_block && !/anonymous/i.test(m.author_block)) {
       const idx = text.indexOf(m.author_block)
       if (idx !== -1) {
-        text =
-          text.slice(0, idx) +
-          'Anonymous Authors\nPaper under double-blind review' +
-          text.slice(idx + m.author_block.length)
+        const placeholder =
+          m.format === 'latex'
+            ? 'Anonymous Authors \\\\ Paper under double-blind review'
+            : 'Anonymous Authors\nPaper under double-blind review'
+        text = text.slice(0, idx) + placeholder + text.slice(idx + m.author_block.length)
         applied.push('Replaced the author/affiliation block with an anonymous placeholder.')
       }
+    }
+
+    // \thanks{...} and \acknowledgments carry funding and affiliation details.
+    if (m.format === 'latex') {
+      const before = text
+      text = text.replace(/\\thanks\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, '')
+      if (text !== before) applied.push('Removed \\thanks{...} footnotes (restore them for camera-ready).')
     }
 
     const emails = text.match(EMAIL) ?? []
@@ -109,23 +120,20 @@ export function applyEdits(text: string, edits: Edit[]): { text: string; applied
     const replacement = edit.action === 'delete' ? '' : edit.new_text
     let span: { start: number; end: number } | null = null
 
-    if (/^title$/i.test(target) && parsed.title) {
-      const i = out.indexOf(parsed.title)
-      if (i !== -1) span = { start: i, end: i + parsed.title.length }
-    } else if (/^author_?block$/i.test(target) && parsed.author_block) {
-      const i = out.indexOf(parsed.author_block)
-      if (i !== -1) span = { start: i, end: i + parsed.author_block.length }
-    } else if (/^abstract$/i.test(target) && parsed.abstract) {
-      const i = out.indexOf(parsed.abstract)
-      if (i !== -1) span = { start: i, end: i + parsed.abstract.length }
+    if (/^title$/i.test(target)) {
+      span =
+        parsed.format === 'latex'
+          ? innerSpan(out, 'title')
+          : locateVerbatim(out, parsed.title)
+    } else if (/^author_?block$/i.test(target)) {
+      span = locateVerbatim(out, parsed.author_block)
+    } else if (/^abstract$/i.test(target)) {
+      span =
+        parsed.format === 'latex'
+          ? innerSpan(out, 'abstract')
+          : locateVerbatim(out, parsed.abstract)
     } else if (/^intro(duction)?_?opening$/i.test(target)) {
-      // Only the first paragraph of the introduction, never the whole section.
-      const intro = parsed.sections.find((s) => s.name === 'Introduction')
-      const firstPara = intro?.body.split(/\n\s*\n/)[0]?.trim()
-      if (firstPara) {
-        const i = out.indexOf(firstPara, intro!.start)
-        if (i !== -1) span = { start: i, end: i + firstPara.length }
-      }
+      span = introOpeningSpan(out, parsed)
     } else if (existing) {
       // Keep the heading line, replace the body beneath it.
       const bodyStart = existing.body ? out.indexOf(existing.body, existing.start) : -1
@@ -146,6 +154,39 @@ export function applyEdits(text: string, edits: Edit[]): { text: string; applied
   return { text: out.replace(/\n{4,}/g, '\n\n\n'), applied, skipped }
 }
 
+function locateVerbatim(text: string, needle: string | null): { start: number; end: number } | null {
+  if (!needle?.trim()) return null
+  const i = text.indexOf(needle)
+  return i === -1 ? null : { start: i, end: i + needle.length }
+}
+
+/**
+ * The first real paragraph of the introduction, in original-source coordinates.
+ *
+ * A LaTeX \section{Introduction} followed straight away by \subsection{...} has
+ * no prose of its own, so the opening paragraph lives in the first subsection.
+ */
+function introOpeningSpan(text: string, parsed: ParsedManuscript): { start: number; end: number } | null {
+  const idx = parsed.sections.findIndex((s) => s.name === 'Introduction')
+  if (idx === -1) return null
+
+  let target = parsed.sections[idx]
+  if (!target.body.trim()) {
+    for (let i = idx + 1; i < parsed.sections.length; i++) {
+      if (parsed.sections[i].level <= parsed.sections[idx].level) break
+      if (parsed.sections[i].body.trim()) {
+        target = parsed.sections[i]
+        break
+      }
+    }
+  }
+
+  const para = target.body.split(/\n\s*\n/).find((p) => p.trim().length > 60)?.trim()
+  if (!para) return null
+  const at = text.indexOf(para, target.start)
+  return at === -1 ? null : { start: at, end: at + para.length }
+}
+
 /**
  * Inserts a new section immediately before the reference list, which is where
  * venues expect statements like Limitations, Ethics and Reproducibility.
@@ -157,12 +198,26 @@ function insertSection(text: string, name: string, body: string, parsed: ParsedM
   const first = lines[0]
     ?.replace(/^#{1,6}\s*/, '')
     .replace(/^\**|\**$/g, '')
+    .replace(/\\(sub)?section\*?\s*\{([^}]*)\}/, '$2')
     .replace(/[:.]\s*$/, '')
     .trim()
   if (first && first.toLowerCase() === name.toLowerCase()) lines.shift()
 
-  const block = `\n\n${name}\n${lines.join('\n').trim()}\n`
-  const refs = parsed.sections.find((s) => s.name === 'References')
-  if (refs) return (text.slice(0, refs.start) + block + '\n' + text.slice(refs.start)).replace(/\n{4,}/g, '\n\n\n')
+  const heading = parsed.format === 'latex' ? `\\section*{${name}}` : name
+  const block = `\n\n${heading}\n${lines.join('\n').trim()}\n`
+
+  // Insert before the bibliography, which is where venues expect statements
+  // like Limitations, Ethics and Reproducibility to sit.
+  let anchor = -1
+  if (parsed.format === 'latex') {
+    const bib = /\\begin\s*\{thebibliography\}|\\bibliographystyle\s*\{|\\bibliography\s*\{|\\end\s*\{document\}/.exec(text)
+    anchor = bib ? bib.index : -1
+  } else {
+    anchor = parsed.sections.find((s) => s.name === 'References')?.start ?? -1
+  }
+
+  if (anchor !== -1) {
+    return (text.slice(0, anchor) + block + '\n' + text.slice(anchor)).replace(/\n{4,}/g, '\n\n\n')
+  }
   return (text.trimEnd() + block).replace(/\n{4,}/g, '\n\n\n')
 }

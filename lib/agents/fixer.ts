@@ -1,5 +1,5 @@
 import { applyEdits } from '../mechanical'
-import { parseManuscript } from '../manuscript'
+import { parseManuscript, sectionProse } from '../manuscript'
 import { MODULES } from '../modules'
 import type { Tracer } from '../trace'
 import type { Edit, FormatReport, FramingReport, ParsedManuscript } from '../types'
@@ -94,13 +94,16 @@ export async function runUnifiedFixer(input: FixerInput): Promise<FixerOutput> {
   }
 
   const current = parseManuscript(text)
-  const intro = current.sections.find((s) => s.name === 'Introduction')
+  const introProse = sectionProse(current, 'Introduction')
 
   const user = [
+    current.format === 'latex'
+      ? 'SOURCE FORMAT: LaTeX. Every new_text must be valid LaTeX that compiles in place — keep \\cite{...}, \\ref{...} and math intact, and do not introduce markdown.'
+      : 'SOURCE FORMAT: plain text.',
     `--- CURRENT TEXT OF THE SPANS YOU MAY EDIT ---`,
     `title: ${current.title ?? '(none)'}`,
     `abstract: ${current.abstract ?? '(none)'}`,
-    intro ? `intro_opening: ${intro.body.split(/\n\s*\n/)[0]?.trim().slice(0, 1200) ?? '(none)'}` : null,
+    introProse ? `intro_opening: ${introProse.split(/\n\s*\n/)[0]?.trim().slice(0, 1200)}` : null,
     `sections currently present: ${current.sections.map((s) => s.name).join(', ') || '(unstructured text)'}`,
     framing
       ? `--- FRAMING REPORT (${framing.venue}) ---\n${JSON.stringify({

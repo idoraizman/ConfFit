@@ -81,10 +81,19 @@ export interface Section {
   /** Character offsets into the original manuscript text. */
   start: number
   end: number
+  /**
+   * Heading depth: 1 for \section, 2 for \subsection. A top-level section whose
+   * prose lives entirely in its subsections has an empty `body`, so anything
+   * that wants "the text of the introduction" must walk the deeper levels too —
+   * see sectionProse().
+   */
+  level: number
 }
 
 export interface ParsedManuscript {
   raw: string
+  /** Drives heading detection, mechanical fixes and how the fixer must write. */
+  format: 'text' | 'latex'
   title: string | null
   /** The block between the title and the abstract (authors + affiliations). */
   author_block: string | null
