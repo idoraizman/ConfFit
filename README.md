@@ -32,8 +32,9 @@ POST /api/execute { prompt }
         │ dispatch
    ConferenceProfiler ──── ReAct + RAG over the CFP          (0 calls when cached)
         │                  ├─ cache HIT  → straight to the workers
-        │ cache MISS       └─ cache MISS → HUMAN-IN-THE-LOOP GATE
-        │                                  ask before ingesting anything
+        │ cache MISS       └─ cache MISS → HUMAN-IN-THE-LOOP GATES
+        │                                  1. ask for the source (link · files · text)
+        │                                  2. ask before saving what was read
         ├──────────────────────────────┐
    FramingAgent                   FormatComplianceAgent
    Reflection: Generate →         ReAct over a deterministic core
@@ -100,66 +101,52 @@ new venue — is **9**. Every response ends with the exact call and token count 
 
 ## Human-in-the-loop RAG
 
-ConfFit never silently crawls and ingests. When a venue is not in the knowledge base,
-`/api/execute` returns a normal `status:"ok"` whose `response` is a confirmation question,
-and the trace shows `ConferenceProfiler` reporting `wrote_to_knowledge_base: false`. No extra
-endpoint is needed — the gate rides on the GUI's follow-up prompt support, and the reply may
-be any of three things, all recognised in code for zero tokens:
+Two gates, and ConfFit never crosses either one on its own: it does not choose the document
+its rules come from, and it does not decide what to remember.
+
+**Gate 1 — where the rules come from.** A venue that is not in the knowledge base stops the
+run. `/api/execute` returns a normal `status:"ok"` whose `response` asks for the source, and
+the trace shows `ConferenceProfiler` reporting `cache_hit: false`, `searched_the_web: false`,
+`wrote_to_knowledge_base: false`. The author answers with any of:
 
 | Reply | What happens |
 | --- | --- |
-| `yes` | Fetches the URL the gate proposed, then ReAct-ingests it. |
-| a bare URL | Ingests that page instead — used when the proposal is wrong or absent. |
-| the guidelines text | Builds the profile from the text verbatim, fetching nothing. `source: "provided"`. |
+| a link | Fetched and read. HTML or PDF — the text layer of a PDF is extracted server-side. |
+| attached files | Up to 5 PDFs or text files, 3 MB total, sent as `files: [{name, data}]` (base64). |
+| pasted text | Used verbatim. Nothing is fetched at all. |
+| `yes` | Only when the author gave a URL as the venue; reads that. |
 
-The third route exists because search cannot be relied on to find a document that may not be
-public, may be a PDF, or may not exist yet: for a venue whose next edition has not been
-announced, no crawl will succeed and only the author can supply the rules. A profile built
-that way is cached, indexed and checked exactly like a fetched one.
+Earlier versions searched the web here and offered what they found. That was removed after
+measuring it against the deployed app rather than a laptop: DuckDuckGo — which does return the
+right page — is blocked from Vercel's IPs, and Bing's RSS view, the only endpoint that answers
+there, entity-matches instead of searching. It returned genealogy forums and a supermarket for
+"SIGGRAPH 2027 author guidelines", pizza delivery for a Eurographics query, and on a good day
+the *parent* conference's rules for a sub-conference — plausible, authoritative-looking and
+wrong. A wrong page produces a confident profile, and no amount of ranking fixes a search that
+cannot reach the web. The author knows which document governs their submission; asking costs
+one turn and is always right.
 
-The proposal itself is best-effort and deliberately conservative, because keyless search is
-not dependable and each engine fails differently:
+**Gate 2 — whether to remember it.** The rules are read, used for that run, and shown in the
+report. Only then does the answer ask whether to keep them, so the decision is made against
+visible consequences rather than a promise. Until the author says yes, nothing has been
+written: the extracted profile and its source text wait in the pending row, which is why
+answering costs **zero LLM calls** — saving writes exactly what was displayed, and it cannot
+come back different the second time.
 
-- DuckDuckGo returns the most on-target hits — it is the one that finds
-  `asia.siggraph.org/2026/submissions/…` for SIGGRAPH Asia — but it rate-limits repeated use
-  and serves datacenter IPs an empty anomaly page, which is where this runs in production.
-- Bing's RSS view does answer from a datacenter, but it entity-matches rather than searches.
-  Asked for "Eurographics 2029 call for papers submission guidelines" it returned pizza
-  delivery and a second-hand clothing marketplace.
-- No single query form wins either: the terse phrasing is what surfaces a sub-conference on
-  DuckDuckGo, while the keyword-heavy one is what gets Bing past a venue's homepage to its
-  author-instructions page.
+`yes` stores the profile and indexes its passages for retrieval; `no` leaves the knowledge base
+untouched and the venue is asked about again next time. Both answers are recognised in code.
 
-So `web_search` queries all three endpoints in parallel and round-robin merges them (Bing
-never gets to decide the answer on its own), `ConferenceProfiler` issues both query forms, and
-the union is ranked deterministically:
+Two rules make the readings trustworthy rather than merely present:
 
-1. **Name coverage first.** A hit must mention at least two thirds of the venue's distinctive
-   words — "siggraph", "asia", not "conference" or "international". This is what stops
-   `siggraph.org/preparing-your-content/author-instructions/` — a better-looking document and
-   the wrong venue — from being proposed for SIGGRAPH **Asia**.
-2. Then author-guide pages over bare CFPs, full-paper rules over side tracks (art papers,
-   posters), no PDFs (`web_fetch` cannot read them), no aggregators.
-3. Anything failing coverage, or carrying neither venue nor submission-guide vocabulary nor an
-   edition year in the URL, is never proposed. Neither is a bare landing page: measured against
-   the deployed app, Bing returns little else, and `https://www.siggraph.org/` cannot contain a
-   page limit — approving one costs the author a round trip to discover that.
-
-An ingestion that resolves no rule at all — no page limit, anonymity policy, template or
-citation style — is treated as a failed read rather than a profile. It leaves the approval open
-instead of caching a profile whose every field is unknown, which would then be served from the
-cache with no gate left to correct it. Fetched pages also carry their own guide-looking links
-into the ReAct observations, so the agent can follow a venue's navigation instead of relying on
-a search that, from this server, mostly returns homepages.
-
-A search for a venue that does not exist still returns six confident results — for "Nimbus
-Symposium on Imaginary Systems 2032", a boat dealer and a toothbrush shop — so the gate lists
-what it found, proposes none of it, and waits. In production, where DuckDuckGo is blocked, a
-sub-conference like SIGGRAPH Asia lands on that same path, and the author's pasted link or
-pasted rules are what carry the run.
-
-A pending approval survives a failed read: if the page turns out to be a PDF or 404s, the same
-gate is still open for the next link, rather than reporting that nothing is pending.
+- **A source that states no rule is not a profile.** If nothing resolves — no page limit,
+  anonymity policy, template, citation style, abstract limit or required section — the read is
+  reported as failed and gate 1 stays open. Caching a profile whose every field is unknown
+  would serve it from the cache forever with no gate left to correct it.
+- **Long sources are filtered, not truncated.** One five-page formatting-instructions PDF
+  already exceeds the synthesis budget, and the author may attach several files. Passages are
+  scored against the vocabulary rules are written in and the highest-scoring ones are kept in
+  order, so a page limit stated in the last file still lands. Slicing the concatenation would
+  drop it silently and produce a confident profile with a hole in it.
 
 ## API
 
@@ -169,7 +156,7 @@ gate is still open for the next link, rather than reporting that nothing is pend
 | `GET /api/team_info` | Team and student details. |
 | `GET /api/agent_info` | Description, purpose, prompt template, and worked examples with their full `steps` traces (captured from real runs and committed, so hitting this endpoint costs nothing). |
 | `GET /api/model_architecture` | The architecture diagram as `image/png`. |
-| `POST /api/execute` | `{ "prompt": "…" }` → `{ status, error, response, steps }`. Optionally accepts `session_id` for follow-ups. |
+| `POST /api/execute` | `{ "prompt": "…" }` → `{ status, error, response, steps }`. Optionally accepts `session_id` for follow-ups and `files` (base64 guideline attachments answering gate 1). |
 
 ### Prompt template
 

@@ -170,6 +170,61 @@ async function main() {
     check('gate asks the user before ingesting', /knowledge base/i.test(gate.response ?? ''))
     check('gate reports that nothing was written',
       (gate.steps ?? []).some((s) => s.module === 'ConferenceProfiler' && s.response?.wrote_to_knowledge_base === false))
+    check('gate did not search the web for a source',
+      (gate.steps ?? []).some((s) => s.module === 'ConferenceProfiler' && s.response?.searched_the_web === false))
+    check('gate asks for a link, files or pasted rules', /attach the guidelines/i.test(gate.response ?? ''))
+
+    // ── Second gate: the rules are read, used, and only then offered for saving ──
+    console.log('\nPOST /api/execute (guidelines attached — save gate)')
+    const rules = [
+      'A Venue That Does Not Exist 2099 — author instructions.',
+      'Length: the main body is limited to 6 pages, excluding references.',
+      'Review is double-blind; anonymise the author block.',
+      'Use the official style file. Citations are numeric.',
+      'The abstract must be at most 150 words.',
+      'A Limitations section is required or the paper is desk rejected.',
+    ].join('\n')
+    const provided = await (
+      await fetch(`${base}/api/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'Guidelines attached',
+          session_id: session,
+          files: [{ name: 'rules.txt', data: Buffer.from(rules, 'utf8').toString('base64') }],
+        }),
+      })
+    ).json()
+    check('an attached guidelines file answers the gate', provided.status === 'ok', provided.error ?? '')
+    check('the run used the provided rules', /Format report|format/i.test(provided.response ?? ''))
+    check('the answer offers to save, having written nothing',
+      /Add .* to the knowledge base\?/.test(provided.response ?? '') &&
+        /nothing has been written to the knowledge base/i.test(provided.response ?? ''))
+
+    const declined = await (
+      await fetch(`${base}/api/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'no', session_id: session }),
+      })
+    ).json()
+    check('declining the save writes nothing', /Not saved/.test(declined.response ?? ''))
+    check('answering the save gate costs no LLM call',
+      (declined.steps ?? []).every((s) => s.response?.llm_call === false))
+
+    console.log('\nPOST /api/execute (attachment that cannot be read)')
+    const badFile = await (
+      await fetch(`${base}/api/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'Guidelines attached',
+          session_id: `${session}-bad`,
+          files: [{ name: 'scan.pdf', data: Buffer.from('not a pdf at all', 'utf8').toString('base64') }],
+        }),
+      })
+    ).json()
+    check('an unreadable attachment says so', /could not read the guidelines/i.test(badFile.response ?? ''))
   }
 
   console.log(`\n${passed} passed, ${failures.length} failed`)

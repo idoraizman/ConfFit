@@ -61,7 +61,7 @@ const SCENARIOS = [
     prompt: `Target conference: SIGBOVIK 2027\nTask: both\nPaper: ${paper.slice(0, 1200)}`,
   },
   {
-    label: 'gate answered with pasted guidelines — nothing fetched',
+    label: 'gate 1 answered with pasted guidelines — nothing fetched, save offered',
     session: 'capture-provided',
     /*
      * The venue is fictional on purpose. This example has to write a profile to
@@ -70,7 +70,13 @@ const SCENARIOS = [
      */
     setup: `Target conference: ${PROVIDED_VENUE}\nTask: both\nPaper: ${paper.slice(0, 1200)}`,
     prompt: PROVIDED_GUIDELINES,
-    expect: /guidelines you pasted/,
+    expect: /Add .* to the knowledge base\?/,
+  },
+  {
+    label: 'gate 2 answered — the profile is stored, at no token cost',
+    session: 'capture-provided',
+    prompt: 'yes',
+    expect: /Saved —/,
   },
 ]
 

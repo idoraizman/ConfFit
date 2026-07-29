@@ -160,10 +160,11 @@ text(CX, 416, "→ ConferenceProfile { focus_areas, valued_criteria, accepted_pa
 arrow(CX, 430, CX, 466, "cache MISS")
 
 # ── Human-in-the-loop gate ───────────────────────────────────────────────────
-box(CX, 468, 620, 82, GATE_FILL, GATE_EDGE, dash=True)
-text(CX, 494, "HUMAN-IN-THE-LOOP GATE — ask before ingesting", F_BOX, GATE_EDGE)
-text(CX, 520, "Returns a confirmation request. Nothing is written to Pinecone or Supabase", F_BOXSUB, MUTED)
-text(CX, 540, "until the user replies \"yes\" or pastes the correct CFP link.", F_BOXSUB, MUTED)
+box(CX, 462, 660, 92, GATE_FILL, GATE_EDGE, dash=True)
+text(CX, 482, "TWO HUMAN-IN-THE-LOOP GATES", F_BOX, GATE_EDGE)
+text(CX, 506, "1. Asks the author for the source — a link, attached PDFs, or pasted text.", F_BOXSUB, MUTED)
+text(CX, 524, "It never picks one itself: a wrong page yields confident, wrong rules.", F_BOXSUB, MUTED)
+text(CX, 542, "2. Asks again before storing. Nothing reaches Supabase or Pinecone unasked.", F_BOXSUB, MUTED)
 
 LX, RX = 420, 980
 
