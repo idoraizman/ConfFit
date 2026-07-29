@@ -41,6 +41,46 @@ Be concrete and quantitative. Do not repeat the reports verbatim — they are pr
 
 const APPROVAL_RE = /^\s*(y|yes|yep|yeah|ok|okay|sure|go ahead|approved?|do it|please do|confirm(ed)?)\b[\s.!]*$/i
 const URL_ONLY_RE = /^\s*(https?:\/\/\S+)\s*$/i
+/** An explicit label the author can put in front of pasted submission rules. */
+const GUIDELINES_FIELD = /^[ \t]*(guidelines?|author\s+instructions?|rules?|cfp|call[\s-]for[\s-]papers?)\s*:/im
+/** Vocabulary that separates pasted submission rules from a pasted manuscript. */
+const RULE_WORDS = [
+  /page limit|\b\d+\s*pages?\b/i,
+  /anonym|double.blind|single.blind/i,
+  /template|style file|\.sty\b|latex|word template/i,
+  /citation|bibliograph|references?\b/i,
+  /submission|submit|deadline|camera.ready|desk.reject/i,
+  /abstract.{0,20}\b(words?|limit)\b/i,
+]
+
+/** A line naming the target venue — the mark of a fresh request, not a reply. */
+const VENUE_LINE = /^\s*(target\s+)?(conference|venue)\s*:/im
+/** Headings that make a paste a manuscript rather than a set of rules. */
+const MANUSCRIPT_SHAPE = [/^\s*abstract\b/im, /^\s*(references|bibliography)\b/im]
+
+/**
+ * Recognises a reply that *is* the venue's guidelines rather than a new request.
+ *
+ * Deterministic on purpose: this decision costs no tokens, and the caller only
+ * acts on it when a pending approval actually exists, so a manuscript pasted out
+ * of turn still routes normally. Real author instructions are often written as
+ * `Page limit: 8` field lines, so the test is not "does this parse as the prompt
+ * template" — it is "does it name a venue (a new request), does it read like a
+ * paper, and does it talk about submission rules".
+ */
+function pastedGuidelines(prompt: string): string | null {
+  const labelled = prompt.match(GUIDELINES_FIELD)
+  if (labelled) {
+    const body = prompt.slice((labelled.index ?? 0) + labelled[0].length).trim()
+    return body.length >= 200 ? body : null
+  }
+  const text = prompt.trim()
+  if (text.length < 200 || text.length > 60_000) return null
+  if (VENUE_LINE.test(text)) return null
+  if (MANUSCRIPT_SHAPE.every((re) => re.test(text))) return null
+  const hits = RULE_WORDS.filter((re) => re.test(text)).length
+  return hits >= 3 ? text : null
+}
 
 export async function execute(rawPrompt: string, sessionId: string): Promise<ExecuteResult> {
   const tracer = new Tracer()
@@ -80,18 +120,29 @@ async function run(
   // A bare approval needs no model call: the architecture's own trace for this
   // turn starts at ConferenceProfiler.
   const bareApproval = APPROVAL_RE.test(prompt) || URL_ONLY_RE.test(prompt)
+  // A long paste is only guidelines if the gate is actually waiting for them.
+  const guidelines = bareApproval ? null : pastedGuidelines(prompt)
+  const answeringGate = bareApproval || (guidelines !== null && (await store.findPending(sessionId, null)) !== null)
   let route: Route
+  let providedGuidelines: string | null = null
 
-  if (bareApproval) {
+  if (answeringGate) {
     const url = prompt.match(URL_ONLY_RE)?.[1] ?? null
+    providedGuidelines = bareApproval ? null : guidelines
     route = { target_conference: null, task: 'both', is_approval_reply: true, provided_url: url, notes: null }
     tracer.addDeterministic(
       MODULES.SUPERVISOR,
       {
-        system: 'Route the incoming request. A bare approval is recognised in code and resumes the pending ingestion.',
+        system:
+          'Route the incoming request. A reply to the human-in-the-loop gate — an approval, a link, or the guidelines themselves — is recognised in code and resumes the pending ingestion.',
         user: prompt.slice(0, 200),
       },
-      { is_approval_reply: true, provided_url: url, dispatch: [MODULES.PROFILER] },
+      {
+        is_approval_reply: true,
+        provided_url: url,
+        provided_guidelines_chars: providedGuidelines?.length ?? 0,
+        dispatch: [MODULES.PROFILER],
+      },
     )
   } else {
     const decision = await tracer.callJson<{
@@ -185,6 +236,7 @@ async function run(
     topic,
     isApprovalReply: route.is_approval_reply,
     providedUrl: route.provided_url,
+    providedGuidelines,
     originalPrompt: prompt,
     task,
   })
@@ -382,6 +434,9 @@ function profileNote(p: { source: string; source_url: string | null; venue: stri
   }
   if (p.source === 'ingested') {
     return `_Venue profile: read from ${p.source_url ?? 'the call-for-papers'} and cached for future runs._`
+  }
+  if (p.source === 'provided') {
+    return `_Venue profile: built from the guidelines you pasted — nothing was fetched from the web — and cached for future runs on ${p.venue}._`
   }
   return `_Venue profile: from the knowledge base${p.source_url ? ` (source: ${p.source_url})` : ''}._`
 }

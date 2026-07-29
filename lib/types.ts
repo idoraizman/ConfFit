@@ -102,8 +102,11 @@ export interface ConferenceProfile {
   valued_criteria: string[]
   accepted_paper_emphasis: string[]
   format_rules: FormatRules
-  /** Where the profile came from — seed corpus, cache, or a fetched CFP. */
-  source: 'seed' | 'cache' | 'ingested'
+  /**
+   * Where the profile came from — the built-in seed corpus, the cache, a CFP the
+   * agent fetched, or guidelines the author pasted in when no page could be read.
+   */
+  source: 'seed' | 'cache' | 'ingested' | 'provided'
   source_url: string | null
   updated_at: string
 }
