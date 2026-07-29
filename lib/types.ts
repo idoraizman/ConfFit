@@ -47,6 +47,8 @@ export interface FormatRules {
   references_in_limit: boolean | null
   /** Max words in the abstract. */
   abstract_word_limit: number | null
+  /** ICLR: "The abstract must be limited to one paragraph." */
+  abstract_single_paragraph: boolean | null
   /** Double-blind submission. */
   anonymous: boolean | null
   citation_style: CitationStyle

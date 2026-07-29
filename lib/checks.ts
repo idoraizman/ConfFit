@@ -130,6 +130,24 @@ export function runFormatChecks(m: ParsedManuscript, rules: FormatRules): CheckO
     })
   }
 
+  // ── Abstract shape ─────────────────────────────────────────────────────────
+  if (m.abstract && rules.abstract_single_paragraph) {
+    const paragraphs = m.abstract.split(/\n\s*\n/).filter((p) => p.trim().length > 0)
+    checks.push({
+      rule: 'abstract_single_paragraph',
+      status: paragraphs.length > 1 ? 'fail' : 'pass',
+      detail:
+        paragraphs.length > 1
+          ? `The venue requires a one-paragraph abstract; this one has ${paragraphs.length} paragraphs.`
+          : 'Abstract is a single paragraph, as the venue requires.',
+      suggestion:
+        paragraphs.length > 1
+          ? 'Merge the abstract into one paragraph.'
+          : 'No action needed.',
+      evidence: paragraphs.length > 1 ? m.abstract.slice(0, 1500) : undefined,
+    })
+  }
+
   // ── Anonymity ──────────────────────────────────────────────────────────────
   const leaks = findAnonymityLeaks(m)
   if (rules.anonymous == null) {
@@ -181,14 +199,27 @@ export function runFormatChecks(m: ParsedManuscript, rules: FormatRules): CheckO
     })
   } else {
     const ok = m.in_text_style === rules.citation_style
+    // For LaTeX + natbib venues the actionable detail is which command is used:
+    // a bare \cite{} renders numerically no matter what the .bst says, so it is
+    // the concrete thing the author has to change.
+    const bareCite = m.format === 'latex' ? (m.raw.match(/\\cite\s*[[{]/g) ?? []).length : 0
+    const natbibCite = m.format === 'latex' ? (m.raw.match(/\\cite[pt]\*?\s*[[{]/g) ?? []).length : 0
+    const style = m.format === 'latex' ? m.raw.match(/\\bibliographystyle\s*\{([^}]*)\}/)?.[1] : undefined
+
     checks.push({
       rule: 'citation_style',
       status: ok ? 'pass' : 'fail',
-      detail: `Manuscript uses ${describeStyle(m.in_text_style)}; the venue requires ${describeStyle(rules.citation_style)}.`,
+      detail: ok
+        ? `Manuscript uses ${describeStyle(m.in_text_style)}, matching the venue.`
+        : m.format === 'latex'
+          ? `The venue requires ${describeStyle(rules.citation_style)}. The source has ${bareCite} bare \\cite{...} and ${natbibCite} \\citep/\\citet call(s)${style ? `, with \\bibliographystyle{${style}}` : ''}.`
+          : `Manuscript uses ${describeStyle(m.in_text_style)}; the venue requires ${describeStyle(rules.citation_style)}.`,
       suggestion: ok
         ? 'Matches the venue style.'
         : rules.citation_style === 'author-year'
-          ? 'Convert numeric citations to author–year (e.g. \\citep{} with natbib).'
+          ? m.format === 'latex'
+            ? `Switch \\bibliographystyle to the venue's natbib-compatible .bst, then replace each \\cite{...}: use \\citet{...} where the authors are part of the sentence ("Smith et al. (2020) show…") and \\citep{...} everywhere else ("…as shown previously (Smith et al., 2020)").`
+            : 'Convert numeric citations to author–year (e.g. \\citep{} with natbib).'
           : 'Convert author–year citations to numeric brackets.',
     })
   }

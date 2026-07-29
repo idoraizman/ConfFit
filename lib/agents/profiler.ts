@@ -9,7 +9,7 @@ import {
   type ResolvedVenue,
 } from '../seed/venues'
 import type { Store } from '../store'
-import { chunk, hasNamespace, search, upsertChunks, vectorBackend } from '../store/vector'
+import { chunk, search, upsertChunks, vectorBackend } from '../store/vector'
 import { callTool } from '../tools'
 import type { Tracer } from '../trace'
 import type { ConferenceProfile, FormatRules, PendingApproval, Task } from '../types'
@@ -203,7 +203,11 @@ async function ground(profile: ConferenceProfile, topic: string): Promise<string
 
 async function indexSeed(resolved: ResolvedVenue): Promise<void> {
   try {
-    if (await hasNamespace(resolved.venue_id)) return
+    // No early return on an existing namespace: this only runs when the profile
+    // is being derived from a seed, which means the seed is new or its version
+    // stamp changed. Record ids are stable, so the upsert refreshes the passages
+    // in place rather than duplicating them — otherwise a corrected corpus would
+    // never reach a venue that had already been indexed once.
     const records = seedCorpus(resolved)
     if (records.length) {
       await upsertChunks(
@@ -302,6 +306,7 @@ async function ingest(
         page_limit: 8,
         references_in_limit: false,
         abstract_word_limit: null,
+        abstract_single_paragraph: null,
         anonymous: true,
         citation_style: 'author-year',
         template: '(mock) official template',
@@ -323,6 +328,8 @@ async function ingest(
       page_limit: numOrNull(rules.page_limit),
       references_in_limit: typeof rules.references_in_limit === 'boolean' ? rules.references_in_limit : null,
       abstract_word_limit: numOrNull(rules.abstract_word_limit),
+      abstract_single_paragraph:
+        typeof rules.abstract_single_paragraph === 'boolean' ? rules.abstract_single_paragraph : null,
       anonymous: typeof rules.anonymous === 'boolean' ? rules.anonymous : null,
       citation_style:
         rules.citation_style === 'numeric' || rules.citation_style === 'author-year' ? rules.citation_style : 'unknown',
