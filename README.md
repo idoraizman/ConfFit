@@ -102,9 +102,55 @@ new venue — is **9**. Every response ends with the exact call and token count 
 
 ConfFit never silently crawls and ingests. When a venue is not in the knowledge base,
 `/api/execute` returns a normal `status:"ok"` whose `response` is a confirmation question,
-and the trace shows `ConferenceProfiler` reporting `wrote_to_knowledge_base: false`. The
-user's next prompt (`yes`, or a pasted CFP link) resumes ingestion. No extra endpoint is
-needed — it rides on the GUI's follow-up prompt support.
+and the trace shows `ConferenceProfiler` reporting `wrote_to_knowledge_base: false`. No extra
+endpoint is needed — the gate rides on the GUI's follow-up prompt support, and the reply may
+be any of three things, all recognised in code for zero tokens:
+
+| Reply | What happens |
+| --- | --- |
+| `yes` | Fetches the URL the gate proposed, then ReAct-ingests it. |
+| a bare URL | Ingests that page instead — used when the proposal is wrong or absent. |
+| the guidelines text | Builds the profile from the text verbatim, fetching nothing. `source: "provided"`. |
+
+The third route exists because search cannot be relied on to find a document that may not be
+public, may be a PDF, or may not exist yet: for a venue whose next edition has not been
+announced, no crawl will succeed and only the author can supply the rules. A profile built
+that way is cached, indexed and checked exactly like a fetched one.
+
+The proposal itself is best-effort and deliberately conservative, because keyless search is
+not dependable and each engine fails differently:
+
+- DuckDuckGo returns the most on-target hits — it is the one that finds
+  `asia.siggraph.org/2026/submissions/…` for SIGGRAPH Asia — but it rate-limits repeated use
+  and serves datacenter IPs an empty anomaly page, which is where this runs in production.
+- Bing's RSS view does answer from a datacenter, but it entity-matches rather than searches.
+  Asked for "Eurographics 2029 call for papers submission guidelines" it returned pizza
+  delivery and a second-hand clothing marketplace.
+- No single query form wins either: the terse phrasing is what surfaces a sub-conference on
+  DuckDuckGo, while the keyword-heavy one is what gets Bing past a venue's homepage to its
+  author-instructions page.
+
+So `web_search` queries all three endpoints in parallel and round-robin merges them (Bing
+never gets to decide the answer on its own), `ConferenceProfiler` issues both query forms, and
+the union is ranked deterministically:
+
+1. **Name coverage first.** A hit must mention at least two thirds of the venue's distinctive
+   words — "siggraph", "asia", not "conference" or "international". This is what stops
+   `siggraph.org/preparing-your-content/author-instructions/` — a better-looking document and
+   the wrong venue — from being proposed for SIGGRAPH **Asia**.
+2. Then author-guide pages over bare CFPs, full-paper rules over side tracks (art papers,
+   posters), no PDFs (`web_fetch` cannot read them), no aggregators.
+3. Anything failing coverage, or carrying neither venue nor submission-guide vocabulary nor an
+   edition year in the URL, is never proposed.
+
+A search for a venue that does not exist still returns six confident results — for "Nimbus
+Symposium on Imaginary Systems 2032", a boat dealer and a toothbrush shop — so the gate lists
+what it found, proposes none of it, and waits. In production, where DuckDuckGo is blocked, a
+sub-conference like SIGGRAPH Asia lands on that same path, and the author's pasted link or
+pasted rules are what carry the run.
+
+A pending approval survives a failed read: if the page turns out to be a PDF or 404s, the same
+gate is still open for the next link, rather than reporting that nothing is pending.
 
 ## API
 

@@ -23,6 +23,27 @@ const allowMock = args.includes('--allow-mock')
 
 const paper = readFileSync(join(HERE, 'fixtures', 'sample-paper.txt'), 'utf8').trim()
 
+const PROVIDED_VENUE = 'Colloquium on Provided Guidelines 2099'
+const PROVIDED_GUIDELINES = `Colloquium on Provided Guidelines 2099 — Author Instructions
+
+Scope. CPG 2099 publishes work on retrieval-grounded agents, tool-using language models and
+their evaluation. We value reproducible systems contributions and honest negative results.
+
+Submission format. The main body is limited to 8 pages; references and appendices do not count
+towards the limit. Submissions must use the official cpg2099.sty style file with
+\\bibliographystyle{cpg-abbrv}. Do not modify margins, font size or the text area. The style
+options "final" and "camera" reveal author identity and must not be used at submission time.
+
+Review model. Review is double-blind. Anonymise the author block and avoid first-person
+references to your own prior work.
+
+Abstract. A single paragraph of at most 250 words.
+
+Citations. Numeric citations in square brackets.
+
+Required statements. A Limitations section and a Reproducibility statement are mandatory;
+submissions without them are desk rejected. An ethics statement is encouraged but optional.`
+
 const SCENARIOS = [
   {
     label: 'both — cached venue',
@@ -39,6 +60,18 @@ const SCENARIOS = [
     session: 'capture-hitl',
     prompt: `Target conference: SIGBOVIK 2027\nTask: both\nPaper: ${paper.slice(0, 1200)}`,
   },
+  {
+    label: 'gate answered with pasted guidelines — nothing fetched',
+    session: 'capture-provided',
+    /*
+     * The venue is fictional on purpose. This example has to write a profile to
+     * the knowledge base, and writing invented rules under a real venue's name
+     * would leave every later run for that venue reading them as fact.
+     */
+    setup: `Target conference: ${PROVIDED_VENUE}\nTask: both\nPaper: ${paper.slice(0, 1200)}`,
+    prompt: PROVIDED_GUIDELINES,
+    expect: /guidelines you pasted/,
+  },
 ]
 
 async function post(prompt, session) {
@@ -54,8 +87,21 @@ async function post(prompt, session) {
 const examples = []
 for (const s of SCENARIOS) {
   process.stdout.write(`• ${s.label} … `)
+  // A scenario that answers the gate needs the gate to be open first. The setup
+  // turn is run but not captured — the example is the reply and its trace.
+  if (s.setup) {
+    const opened = await post(s.setup, s.session)
+    if (opened.status !== 'ok') throw new Error(`scenario "${s.label}" setup failed: ${opened.error}`)
+  }
   const result = await post(s.prompt, s.session)
   if (result.status !== 'ok') throw new Error(`scenario "${s.label}" failed: ${result.error}`)
+  if (s.expect && !s.expect.test(result.response ?? '')) {
+    throw new Error(
+      `scenario "${s.label}" did not take the expected path (looking for ${s.expect}).\n` +
+        `If this venue is already cached, delete its row from conference_profiles and re-run:\n` +
+        `  delete from public.conference_profiles where venue like '%Provided Guidelines%';`,
+    )
+  }
   console.log(`${result.steps.length} step(s)`)
   examples.push({
     scenario: s.label,
