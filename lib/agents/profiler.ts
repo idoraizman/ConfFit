@@ -1,6 +1,13 @@
 import { config } from '../config'
 import { MODULES } from '../modules'
-import { guessCfpUrl, profileFromSeed, resolveVenue, seedCorpus, type ResolvedVenue } from '../seed/venues'
+import {
+  SEED_AS_OF,
+  guessCfpUrl,
+  profileFromSeed,
+  resolveVenue,
+  seedCorpus,
+  type ResolvedVenue,
+} from '../seed/venues'
 import type { Store } from '../store'
 import { chunk, hasNamespace, search, upsertChunks, vectorBackend } from '../store/vector'
 import { callTool } from '../tools'
@@ -39,15 +46,17 @@ const PROFILER_SYSTEM_REACT = `You are ConferenceProfiler, a ReAct agent that bu
 You have these tools: web_fetch(url), web_search(query).
 Reply with a JSON object only:
 {"thought":"<one sentence>","action":"web_fetch"|"web_search"|"finish","action_input":"<url or query, or empty when finishing>"}
-Choose "finish" as soon as the observations contain the venue's scope and its submission rules (page limit, anonymity, citation style, template). Never take more than the allowed number of steps.`
+A bare call-for-papers is usually topics, dates and policies; the concrete formatting rules live on the venue's author guide / author instructions / formatting page. If the observations so far give you scope but no page limit, template or citation style, fetch that page next — search for "<venue> author guide formatting instructions" or try the CFP URL with CallForPapers replaced by AuthorGuide.
+Choose "finish" as soon as the observations contain the venue's scope AND its submission rules (page limit, anonymity, citation style, template). Never take more than the allowed number of steps.`
 
 const PROFILER_SYSTEM_SYNTH = `You are ConferenceProfiler. Turn the observations from a venue's Call-for-Papers into a structured profile.
 Return a JSON object only, with exactly these keys:
 {"focus_areas":[string],"valued_criteria":[string],"accepted_paper_emphasis":[string],
  "format_rules":{"page_limit":number|null,"references_in_limit":boolean|null,"abstract_word_limit":number|null,
                  "anonymous":boolean|null,"citation_style":"numeric"|"author-year"|"unknown",
-                 "template":string|null,"required_sections":[string],"unresolved":[string]}}
-Rules: use null and "unknown" for anything the observations do not state — never guess a page limit or a review model. List every rule you could not determine in "unresolved". Keep each list to at most 5 short entries.`
+                 "template":string|null,"required_sections":[string],"recommended_sections":[string],"unresolved":[string]}}
+Rules: use null and "unknown" for anything the observations do not state — never guess a page limit or a review model. List every rule you could not determine in "unresolved". Keep each list to at most 5 short entries.
+required_sections is only for sections whose absence breaks a rule ("must include", "will be desk rejected without"). Anything the venue calls encouraged, recommended or optional goes in recommended_sections instead — reporting encouragement as a violation sends authors chasing a problem they do not have.`
 
 export async function runConferenceProfiler(input: ProfilerInput): Promise<ProfilerOutput> {
   const { tracer, store, sessionId } = input
@@ -78,7 +87,10 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
 
   // ── Cache check — no LLM ───────────────────────────────────────────────────
   const cached = await store.getProfile(resolved.venue_id)
-  if (cached) {
+  // A profile built from an older version of the built-in baselines is treated
+  // as a miss, so corrections to a seed are not masked by the cache.
+  const staleSeed = cached?.source === 'seed' && cached.updated_at !== SEED_AS_OF
+  if (cached && !staleSeed) {
     const grounding = await ground(cached, input.topic)
     tracer.addDeterministic(
       MODULES.PROFILER,
@@ -131,7 +143,7 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
   let alternatives: { title: string; url: string }[] = []
   if (!proposed) {
     const hit = await callTool('web_search', {
-      query: `${resolved.display} call for papers submission guidelines page limit anonymous`,
+      query: `${resolved.display} author guide formatting instructions page limit anonymous submission`,
     })
     const results = (hit.meta?.results as { title: string; url: string }[] | undefined) ?? []
     proposed = results[0]?.url ?? null
@@ -225,7 +237,13 @@ async function ingest(
   }
 
   for (let i = 0; i < config.agents.reactMaxIters; i++) {
-    const enough = observations.some((o) => o.length > 800 && !o.includes('FAILED'))
+    // Length alone is a poor signal: a call-for-papers can run for pages
+    // without stating a single formatting rule. Require the rules to be there.
+    const gathered = observations.filter((o) => !o.includes('FAILED')).join(' ')
+    const enough =
+      gathered.length > 800 &&
+      /\bpage limit\b|\bpages?\b.{0,40}\blimit\b|\b\d+\s*pages?\b/i.test(gathered) &&
+      /anonym|double.blind|single.blind/i.test(gathered)
     if (enough) break
 
     const decision = await tracer.callJson<{ thought?: string; action?: string; action_input?: string }>(
@@ -288,6 +306,7 @@ async function ingest(
         citation_style: 'author-year',
         template: '(mock) official template',
         required_sections: [],
+        recommended_sections: [],
         unresolved: [],
       },
     },
@@ -309,6 +328,7 @@ async function ingest(
         rules.citation_style === 'numeric' || rules.citation_style === 'author-year' ? rules.citation_style : 'unknown',
       template: typeof rules.template === 'string' && rules.template ? rules.template : null,
       required_sections: arr(rules.required_sections),
+      recommended_sections: arr(rules.recommended_sections),
       unresolved: arr(rules.unresolved),
     },
     source: 'ingested',
