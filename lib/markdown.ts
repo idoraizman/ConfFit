@@ -36,14 +36,19 @@ export function renderMarkdown(src: string): string {
   while (i < lines.length) {
     const line = lines[i]
 
-    // Fenced code block
+    // Fenced code block. The revised manuscript is the thing users actually
+    // take away, so every block carries a copy button; the click handler is
+    // delegated from the page rather than inlined, to keep this HTML inert.
     const fence = line.match(/^```(\w*)\s*$/)
     if (fence) {
       const body: string[] = []
       i++
       while (i < lines.length && !/^```\s*$/.test(lines[i])) body.push(lines[i++])
       i++
-      out.push(`<pre class="code"><code>${body.join('\n')}</code></pre>`)
+      out.push(
+        `<div class="codeblock"><button type="button" class="copybtn" data-copy>Copy</button>` +
+          `<pre class="code"><code>${body.join('\n')}</code></pre></div>`,
+      )
       continue
     }
 

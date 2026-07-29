@@ -316,6 +316,47 @@ button.ghost:hover:not(:disabled) {
   padding: 1px 5px;
 }
 
+.codeblock {
+  position: relative;
+}
+
+.copybtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  font: 600 11.5px/1 var(--mono);
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  opacity: 0.75;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.codeblock:hover .copybtn,
+.copybtn:focus-visible {
+  opacity: 1;
+}
+
+.copybtn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.copybtn.done {
+  color: var(--ok);
+  border-color: var(--ok);
+  opacity: 1;
+}
+
+.copybtn.failed {
+  color: var(--gate);
+  border-color: var(--gate);
+  opacity: 1;
+}
+
 .md pre.code {
   background: var(--bg);
   border: 1px solid var(--line);

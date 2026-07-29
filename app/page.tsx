@@ -246,7 +246,45 @@ function TurnView({ turn }: { turn: Turn }) {
 
 function Markdown({ source }: { source: string }) {
   const html = useMemo(() => renderMarkdown(source), [source])
-  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />
+
+  /**
+   * Copy buttons are delegated rather than bound per block: the markdown is
+   * injected as HTML, so there is no React element to attach a handler to.
+   */
+  const onClick = async (e: React.MouseEvent<HTMLDivElement>) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-copy]')
+    if (!btn) return
+    const code = btn.parentElement?.querySelector('code')?.textContent
+    if (!code) return
+
+    const restore = (label: string) => {
+      btn.textContent = label
+      setTimeout(() => {
+        btn.textContent = 'Copy'
+        btn.classList.remove('done', 'failed')
+      }, 1800)
+    }
+    try {
+      await navigator.clipboard.writeText(code)
+      btn.classList.add('done')
+      restore('Copied')
+    } catch {
+      // Clipboard access is refused outside a secure context; select the text
+      // so ⌘C still works rather than leaving the user with a dead button.
+      const range = document.createRange()
+      const pre = btn.parentElement?.querySelector('pre')
+      if (pre) {
+        range.selectNodeContents(pre)
+        const sel = window.getSelection()
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      }
+      btn.classList.add('failed')
+      restore('Press ⌘C')
+    }
+  }
+
+  return <div className="md" onClick={onClick} dangerouslySetInnerHTML={{ __html: html }} />
 }
 
 function Trace({ steps }: { steps: Step[] }) {
