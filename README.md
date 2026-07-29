@@ -89,6 +89,11 @@ required:
   LaTeX, markdown and numbered headings; the model is only asked when that finds nothing, and
   it returns verbatim anchors that code locates, so edit offsets stay exact.
 - **The reflection loop is capped** at N ≤ 2 in code, not by prompt instruction.
+- **Citation conversion is deterministic.** Choosing `\citet` vs `\citep` was tried as a
+  model call and measured: it misread the common "named system, then citation" pattern often
+  enough to emit ungrammatical text (`Marble Cheng et al. (2025) performs ...`). A rule that
+  claims `\citet` only on two high-precision signals — the citation opens the clause and is
+  followed by a verb, or it follows a construction needing a noun — is both safer and free.
 
 A full `both` run on a cached venue is typically **6 LLM calls**; the worst case — ingesting a
 new venue — is **9**. Every response ends with the exact call and token count for that run.
@@ -130,7 +135,7 @@ Paste the manuscript, or drop a `.txt` / `.md` / `.tex` file onto the composer i
 
 | Input | Handling |
 | --- | --- |
-| **LaTeX source** | Parsed natively: `\section`, `\subsection`, `\begin{abstract}`, `\title`, `\author`, `\thanks`, `\bibliographystyle` and `\cite`. Word counts exclude markup, maths and floats. The revision is returned as compilable LaTeX — macros, citations and equations survive untouched, anonymisation rewrites `\author{...}` in place, and a required section is inserted as `\section*{...}` before the bibliography. |
+| **LaTeX source** | Preamble checked against the venue template (style package, `\bibliographystyle`, forbidden layout overrides, de-anonymising options) and fixed in place. Citation commands are converted to the venue's required style. Parsed natively: `\section`, `\subsection`, `\begin{abstract}`, `\title`, `\author`, `\thanks`, `\bibliographystyle` and `\cite`. Word counts exclude markup, maths and floats. The revision is returned as compilable LaTeX — macros, citations and equations survive untouched, anonymisation rewrites `\author{...}` in place, and a required section is inserted as `\section*{...}` before the bibliography. |
 | **Markdown / plain text** | `#` headings, `1. Introduction`, and ALL-CAPS headings. |
 | **Text copied out of a PDF** | Usually parses fine, since rendered headings survive the copy. If they do not, the Supervisor spends one call to recover the structure and says so in the response. |
 | **PDF / .docx** | Not accepted. Programmatic extraction mangles two-column layouts badly enough to corrupt section parsing; copying the text out of a viewer gives much cleaner input. |
