@@ -203,21 +203,29 @@ button.ghost:hover:not(:disabled) {
   padding: 14px 18px;
 }
 
+/*
+ * The renderer demotes markdown by one level so the response never emits a
+ * second <h1>: "# " becomes h2 (the response title), "## " becomes h3 (the
+ * major reports) and "### " becomes h4. The section rule therefore belongs on
+ * h3, not h2.
+ */
 .md h2 {
-  font-size: 19px;
-  margin: 22px 0 8px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
+  font-size: 21px;
+  margin: 14px 0 10px;
+  letter-spacing: -0.01em;
 }
 
 .md h3 {
-  font-size: 16px;
-  margin: 18px 0 6px;
+  font-size: 17px;
+  margin: 26px 0 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
 }
 
 .md h4 {
-  font-size: 14px;
-  margin: 14px 0 4px;
+  font-size: 14.5px;
+  margin: 18px 0 4px;
+  color: var(--muted);
 }
 
 .md p {
@@ -288,6 +296,20 @@ button.ghost:hover:not(:disabled) {
 .md th {
   background: var(--bg);
   font-weight: 600;
+}
+
+/* Format report: keep the rule and status columns from wrapping to one
+   character per line when the finding text is long. */
+.md td:nth-child(1),
+.md td:nth-child(2),
+.md th:nth-child(1),
+.md th:nth-child(2) {
+  white-space: nowrap;
+  width: 1%;
+}
+
+.md td:nth-child(1) {
+  font: 12.5px/1.5 var(--mono);
 }
 
 /* ── Steps trace ────────────────────────────────────────────────────────── */

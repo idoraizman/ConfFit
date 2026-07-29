@@ -6,8 +6,9 @@ submission rules, then returns **one revised manuscript** that applies both.
 
 Course project · Itay Krausz, Ido Raizman, Roi Teichman
 
-- **Live app:** _(add the Vercel URL here)_
-- **Architecture diagram:** `GET /api/model_architecture`
+- **Live app:** https://conffit.vercel.app
+- **Repository:** https://github.com/idoraizman/ConfFit
+- **Architecture diagram:** https://conffit.vercel.app/api/model_architecture
 
 ---
 
