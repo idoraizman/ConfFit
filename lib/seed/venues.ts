@@ -1,4 +1,4 @@
-import type { ConferenceProfile, FormatRules } from '../types'
+import type { ConferenceProfile, FormatRules, TemplateSpec } from '../types'
 
 /**
  * Seed corpus of venue baselines.
@@ -21,7 +21,7 @@ import type { ConferenceProfile, FormatRules } from '../types'
  * profiler treats any cached seed profile with a different stamp as a miss, so
  * a correction reaches every venue instead of being masked by the cache.
  */
-export const SEED_AS_OF = '2026-07-29b'
+export const SEED_AS_OF = '2026-07-29c'
 
 interface VenueSeed {
   family: string
@@ -44,6 +44,15 @@ interface VenueSeed {
 
 const numeric = 'numeric' as const
 const authorYear = 'author-year' as const
+
+/**
+ * Machine-checkable template facts, filled in only for venues whose template we
+ * have actually read. Guessing a style-package name would produce a confident
+ * "your preamble is wrong" against a package that does not exist, so the rest
+ * stay null and their preamble checks simply do not run until the profiler
+ * ingests the venue's author guide.
+ */
+const NO_TEMPLATE_SPEC: TemplateSpec | null = null
 
 export const VENUE_SEEDS: VenueSeed[] = [
   {
@@ -78,6 +87,18 @@ export const VENUE_SEEDS: VenueSeed[] = [
       abstract_single_paragraph: true,
       anonymous: true,
       citation_style: authorYear,
+      // Verified against iclr2026.zip: iclr2026_conference.sty \RequirePackage{natbib},
+      // the shell .tex uses \bibliographystyle{iclr2026_conference}, and the
+      // instructions forbid modifying the text rectangle. \iclrfinalcopy switches
+      // the style to camera-ready, which de-anonymises the paper.
+      template_spec: {
+        style_package: 'iclr2026_conference',
+        bibliography_style: 'iclr2026_conference',
+        deanonymising_options: [],
+        forbidden_macros: ['\\iclrfinalcopy'],
+        forbids_layout_override: true,
+        template_url: 'https://github.com/ICLR/Master-Template/raw/master/iclr2026.zip',
+      },
       template: 'the official ICLR template (iclr2026.zip → iclr2026_conference.sty + .bst, natbib author–year, single column)',
       // The 2026 Author Guide calls the Reproducibility Statement "strongly
       // encouraged" and the Ethics Statement "optional"; neither is mandatory,
@@ -133,6 +154,17 @@ export const VENUE_SEEDS: VenueSeed[] = [
       abstract_single_paragraph: null,
       anonymous: true,
       citation_style: authorYear,
+      // Verified against neurips_2026.sty: the default (main-track) option is
+      // anonymous, while \if@neuripsfinal and \if@preprint both set
+      // \@anonymousfalse — so [final] and [preprint] print the author names.
+      template_spec: {
+        style_package: 'neurips_2026',
+        bibliography_style: null,
+        deanonymising_options: ['final', 'preprint'],
+        forbidden_macros: [],
+        forbids_layout_override: true,
+        template_url: 'https://neurips.cc/Conferences/2026/AuthorGuidelines',
+      },
       template: 'the official NeurIPS LaTeX style (neurips_2026.sty)',
       required_sections: ['Limitations'],
       recommended_sections: [],
@@ -177,6 +209,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       abstract_single_paragraph: null,
       anonymous: true,
       citation_style: authorYear,
+      template_spec: NO_TEMPLATE_SPEC,
       template: 'the official ICML LaTeX style (icml2026.sty)',
       required_sections: [],
       recommended_sections: [],
@@ -220,6 +253,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       abstract_single_paragraph: null,
       anonymous: true,
       citation_style: authorYear,
+      template_spec: NO_TEMPLATE_SPEC,
       template: 'the ACL style files (acl.sty, natbib author–year)',
       required_sections: ['Limitations'],
       recommended_sections: [],
@@ -262,6 +296,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       abstract_single_paragraph: null,
       anonymous: true,
       citation_style: authorYear,
+      template_spec: NO_TEMPLATE_SPEC,
       template: 'the ACL style files (acl.sty, natbib author–year)',
       required_sections: ['Limitations'],
       recommended_sections: [],
@@ -305,6 +340,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       abstract_single_paragraph: null,
       anonymous: true,
       citation_style: numeric,
+      template_spec: NO_TEMPLATE_SPEC,
       template: 'the official CVPR LaTeX template (cvpr.sty)',
       required_sections: [],
       recommended_sections: [],
@@ -347,6 +383,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       abstract_single_paragraph: null,
       anonymous: true,
       citation_style: authorYear,
+      template_spec: NO_TEMPLATE_SPEC,
       template: 'the AAAI author kit (aaai.sty, AAAI press format)',
       required_sections: [],
       recommended_sections: [],
@@ -388,6 +425,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       abstract_single_paragraph: null,
       anonymous: true,
       citation_style: numeric,
+      template_spec: NO_TEMPLATE_SPEC,
       template: 'the ACM sigconf template (acmart, sigconf)',
       required_sections: [],
       recommended_sections: [],
