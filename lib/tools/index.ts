@@ -1,5 +1,6 @@
 import { TOOLS, type ToolName } from '../modules'
 import { search as vectorSearch } from '../store/vector'
+import { extractPdfText } from '../guidelines'
 import { guideLinks, htmlToText } from './html'
 
 /**
@@ -27,7 +28,8 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: 'web_fetch',
-    description: 'Fetch one URL and return its readable text. Used to read a CFP page.',
+    description:
+      'Fetch one URL and return its readable text, including the text layer of a PDF. Used to read a call-for-papers or author-instructions document the author pointed at.',
     input_schema: {
       type: 'object',
       properties: { url: { type: 'string' }, max_chars: { type: 'number' } },
@@ -102,11 +104,35 @@ async function webFetch(url: string, maxChars: number): Promise<ToolResult> {
       return { tool: 'web_fetch', ok: false, content: `HTTP ${res.status} fetching ${url}` }
     }
     const type = res.headers.get('content-type') ?? ''
-    if (/pdf|image|octet-stream/i.test(type)) {
+
+    // Venues publish formatting instructions as PDFs at least as often as HTML,
+    // so a PDF link is read with the same extractor an upload goes through
+    // rather than being refused.
+    if (/pdf/i.test(type) || /\.pdf($|[?#])/i.test(res.url)) {
+      const { text, pages } = await extractPdfText(new Uint8Array(await res.arrayBuffer()))
+      if (!text.trim()) {
+        return {
+          tool: 'web_fetch',
+          ok: false,
+          content:
+            pages > 0
+              ? `${url} is a ${pages}-page PDF with no text layer — a scan, so there is nothing to read.`
+              : `${url} could not be parsed as a PDF.`,
+        }
+      }
+      return {
+        tool: 'web_fetch',
+        ok: true,
+        content: text.slice(0, maxChars),
+        meta: { url: res.url, chars: text.length, truncated: text.length > maxChars, pdf_pages: pages, links: [] },
+      }
+    }
+
+    if (/image|octet-stream|zip/i.test(type)) {
       return {
         tool: 'web_fetch',
         ok: false,
-        content: `${url} is ${type}; ConfFit reads HTML and plain text only. Provide an HTML version of the CFP.`,
+        content: `${url} is ${type}; ConfFit reads HTML, plain text and PDFs. Provide the author-instructions page or paste the rules in.`,
       }
     }
     const body = await res.text()

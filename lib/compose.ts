@@ -11,6 +11,24 @@ export const ACCEPTED_EXTENSIONS = ['.txt', '.md', '.markdown', '.tex', '.rst', 
 /** Generous ceiling; the server rejects anything over 200k characters. */
 export const MAX_FILE_BYTES = 2_000_000
 
+/*
+ * Guideline attachments — the venue's rules, not the author's paper. PDFs are
+ * accepted here (and only here) because that is how venues publish formatting
+ * instructions; the text is extracted on the server, so the browser ships no PDF
+ * engine. The limits are stated on both sides: the client so the author is told
+ * before uploading, the server because it cannot trust the client.
+ */
+export const GUIDELINE_EXTENSIONS = ['.pdf', '.txt', '.md', '.markdown', '.tex', '.rst', '.text'] as const
+export const MAX_GUIDELINE_FILE_BYTES = 4_000_000
+/** Total before base64 expansion, which is a third larger, under the 4.5 MB body limit. */
+export const MAX_GUIDELINE_TOTAL_BYTES = 3_000_000
+export const MAX_GUIDELINE_FILES = 5
+
+export function isGuidelineFilename(name: string): boolean {
+  const lower = name.toLowerCase()
+  return GUIDELINE_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
 const FIELD_START = /^\s*(notes|target\s+conference|conference|venue|task)\s*:/i
 const PAPER_START = /^\s*(paper|manuscript)\s*:/i
 
