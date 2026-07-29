@@ -1,0 +1,50 @@
+Cache-Aware Expert Routing for Efficient Mixture-of-Experts Inference
+
+Ann Researcher, Ben Coder, Carla Dev
+Institute of Technology, Department of Computer Science
+ann.researcher@example.edu, ben.coder@example.edu
+
+Abstract
+Mixture-of-Experts (MoE) models activate only a small subset of their parameters per token, but in practice inference throughput is dominated not by computation but by the movement of expert weights between high-bandwidth memory and the accelerator's on-chip cache. We introduce CAR, a cache-aware routing policy that augments the standard top-k gating function with a residency term reflecting which experts are already resident in cache. CAR requires no retraining of the base model and is implemented as a drop-in replacement for the router at inference time. Across three open MoE checkpoints ranging from 8B to 47B total parameters, CAR reduces expert-weight traffic by 31 to 44 percent and improves end-to-end decoding throughput by 1.6x to 2.1x on a single A100, while changing downstream task accuracy by less than 0.4 points on MMLU, GSM8K and HumanEval. We further show that the residency term can be annealed during a brief 200-step calibration phase to recover almost all of the remaining accuracy gap, and we characterise the regime in which cache-aware routing helps: the benefit grows with the ratio of expert parameter volume to cache capacity and shrinks as the batch size grows, because large batches already amortise expert loads across many tokens. Our analysis suggests that routing decisions in deployed MoE systems should be treated as a joint function of token semantics and hardware state rather than semantics alone. We release our implementation and all benchmark scripts.
+
+1. Introduction
+Sparsely activated Mixture-of-Experts architectures have become a standard way to grow model capacity without a proportional increase in per-token computation [1, 2]. In deployment, however, the promised efficiency often fails to materialise. Profiling deployed MoE serving stacks shows that a large fraction of decoding latency is spent moving expert weight matrices across the memory hierarchy rather than performing matrix multiplication [3].
+
+This paper makes three contributions:
+- We characterise the memory-traffic bottleneck in MoE decoding and show that standard top-k routing is nearly worst-case with respect to cache locality.
+- We propose CAR, a cache-aware routing policy that adds a residency bonus to the gating logits and requires no retraining.
+- We evaluate CAR on three open checkpoints and report 1.6x to 2.1x throughput gains at under 0.4 points of accuracy change, together with an analysis of when the technique helps and when it does not.
+
+Our previous work on expert placement [4] considered the static assignment of experts to devices; here we address the complementary, dynamic question of which experts to select given the current cache state.
+
+2. Related Work
+Efficient MoE inference has been studied from several angles. Expert offloading systems keep cold experts in host memory and stream them on demand [5, 6]. Expert pruning and merging reduce the number of distinct experts [7]. Scheduling work reorders requests so that tokens routed to the same expert are batched together [8]. Our approach is orthogonal to all three and composes with them.
+
+3. Method
+Let g(x) be the gating network producing logits over E experts for token x. Standard top-k routing selects the k experts with the largest logits. CAR instead selects the top-k of g(x) + lambda * r, where r is a binary residency vector indicating which experts are currently cached and lambda is a scalar controlling the strength of the cache preference. We maintain r with a standard LRU policy over expert slots.
+
+The single hyper-parameter lambda trades throughput against fidelity. We show in Section 5 that a fixed lambda of 0.35 works across all three checkpoints, and that annealing lambda from 0.6 to 0.2 over a 200-step calibration phase recovers most of the residual accuracy gap.
+
+4. Experiments
+We evaluate on Mixtral-8x7B, an 8B internal checkpoint, and a 47B open checkpoint, on a single A100 80GB. We measure expert-weight traffic with hardware counters and end-to-end decoding throughput at batch sizes 1, 8 and 32. Accuracy is measured on MMLU, GSM8K and HumanEval. All code is available at https://github.com/ann-researcher/car-routing.
+
+5. Results
+CAR reduces expert-weight traffic by 31 to 44 percent across the three checkpoints at batch size 1, and improves throughput by 1.6x to 2.1x. The gain shrinks to 1.15x at batch size 32, consistent with our analysis: large batches already amortise expert loads. Accuracy changes by at most 0.4 points, and by at most 0.1 points after calibration.
+
+Ablations show that the residency term alone accounts for the entire gain; replacing LRU with random eviction removes roughly half of it.
+
+6. Conclusion
+We showed that treating routing as a function of hardware state as well as token semantics yields substantial throughput gains in MoE inference at negligible accuracy cost. Future work should consider learned eviction policies and multi-device residency.
+
+Acknowledgements
+We thank the Institute of Technology systems group for access to their cluster, and gratefully acknowledge support from grant NSF-1234567.
+
+References
+[1] Shazeer, N. et al. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. ICLR, 2017.
+[2] Fedus, W., Zoph, B., and Shazeer, N. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. JMLR, 2022.
+[3] Kim, S. et al. A profiling study of mixture-of-experts serving. MLSys, 2024.
+[4] Researcher, A. and Coder, B. Static expert placement for distributed MoE serving. SysML Workshop, 2024.
+[5] Eliseev, A. and Mazur, D. Fast inference of mixture-of-experts language models with offloading. arXiv, 2023.
+[6] Xue, L. et al. MoE-Infinity: Offloading-efficient MoE model serving. arXiv, 2024.
+[7] Lu, X. et al. Not all experts are equal: Efficient expert pruning for MoE LLMs. ACL, 2024.
+[8] Huang, H. et al. Towards MoE deployment: Mitigating inefficiencies in mixture-of-expert inference. arXiv, 2023.
