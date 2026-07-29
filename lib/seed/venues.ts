@@ -21,7 +21,7 @@ import type { ConferenceProfile, FormatRules } from '../types'
  * profiler treats any cached seed profile with a different stamp as a miss, so
  * a correction reaches every venue instead of being masked by the cache.
  */
-export const SEED_AS_OF = '2026-07-29'
+export const SEED_AS_OF = '2026-07-29b'
 
 interface VenueSeed {
   family: string
@@ -75,6 +75,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       page_limit: 9,
       references_in_limit: false,
       abstract_word_limit: null,
+      abstract_single_paragraph: true,
       anonymous: true,
       citation_style: authorYear,
       template: 'the official ICLR template (iclr2026.zip → iclr2026_conference.sty + .bst, natbib author–year, single column)',
@@ -92,6 +93,11 @@ export const VENUE_SEEDS: VenueSeed[] = [
       'An Ethics Statement is optional at ICLR but encouraged where relevant; it does not count toward the page limit and should not exceed one page. A paragraph-long Reproducibility Statement is strongly encouraged and also does not count toward the page limit.',
       'If large language models played a significant role in research ideation or writing, ICLR requires the authors to disclose it. The disclosure may appear in the appendix and does not count toward the page limit.',
       'ICLR does not permit dual submission: papers identical or substantially similar to work previously published or accepted elsewhere are not allowed. Preprints on non-peer-reviewed servers such as arXiv do not violate this policy.',
+      'ICLR body text must be confined to a rectangle 5.5 inches wide and 9 inches long, set in 10 point type with 11 point vertical spacing, starting 1 inch from the top of the page. Times New Roman is the preferred typeface. Do not modify the width or length of that rectangle and do not change font sizes. Pages must be numbered.',
+      'The ICLR paper title is 17 point, small caps, left-aligned. First-level headings are small caps, flush left, 12 point; second- and third-level headings are small caps, flush left, 10 point. The word "Abstract" is centered, small caps, 12 point, and the abstract paragraph is indented half an inch on both margins.',
+      'The ICLR abstract must be limited to one paragraph.',
+      'ICLR citations use natbib. Use \\citet when the authors or the publication are part of the sentence ("Smith et al. (2020) show that..."), and \\citep otherwise ("...as shown previously (Smith et al., 2020)"). A bare \\cite renders as a number and is not the ICLR style.',
+      'Once an ICLR paper is accepted, insert \\iclrfinalcopy to switch the style file to camera-ready formatting, which de-anonymises the paper and expands the main-text limit to 10 pages.',
       'ICLR values contributions to representation learning: new architectures, training objectives, optimisation insights, theory, and empirical studies that explain why methods behave as they do.',
     ],
   },
@@ -124,6 +130,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       page_limit: 9,
       references_in_limit: false,
       abstract_word_limit: null,
+      abstract_single_paragraph: null,
       anonymous: true,
       citation_style: authorYear,
       template: 'the official NeurIPS LaTeX style (neurips_2026.sty)',
@@ -167,6 +174,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       page_limit: 8,
       references_in_limit: false,
       abstract_word_limit: null,
+      abstract_single_paragraph: null,
       anonymous: true,
       citation_style: authorYear,
       template: 'the official ICML LaTeX style (icml2026.sty)',
@@ -209,6 +217,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       page_limit: 8,
       references_in_limit: false,
       abstract_word_limit: null,
+      abstract_single_paragraph: null,
       anonymous: true,
       citation_style: authorYear,
       template: 'the ACL style files (acl.sty, natbib author–year)',
@@ -250,6 +259,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       page_limit: 8,
       references_in_limit: false,
       abstract_word_limit: null,
+      abstract_single_paragraph: null,
       anonymous: true,
       citation_style: authorYear,
       template: 'the ACL style files (acl.sty, natbib author–year)',
@@ -292,6 +302,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       page_limit: 8,
       references_in_limit: false,
       abstract_word_limit: null,
+      abstract_single_paragraph: null,
       anonymous: true,
       citation_style: numeric,
       template: 'the official CVPR LaTeX template (cvpr.sty)',
@@ -333,6 +344,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       page_limit: 7,
       references_in_limit: false,
       abstract_word_limit: null,
+      abstract_single_paragraph: null,
       anonymous: true,
       citation_style: authorYear,
       template: 'the AAAI author kit (aaai.sty, AAAI press format)',
@@ -373,6 +385,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
       page_limit: 9,
       references_in_limit: false,
       abstract_word_limit: null,
+      abstract_single_paragraph: null,
       anonymous: true,
       citation_style: numeric,
       template: 'the ACM sigconf template (acmart, sigconf)',
