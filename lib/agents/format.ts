@@ -1,10 +1,11 @@
 import { runFormatChecks, summariseChecks, type AnonymityLeak } from '../checks'
+import { convertToAuthorYear, convertToNumeric, type ConversionResult } from '../citations'
 import { config } from '../config'
 import { applyMechanicalFixes } from '../mechanical'
 import { MODULES } from '../modules'
 import { callTool } from '../tools'
 import type { Tracer } from '../trace'
-import type { CheckResult, CheckStatus, ConferenceProfile, FormatReport, ParsedManuscript } from '../types'
+import type { CheckResult, CheckStatus, ConferenceProfile, FormatReport, FormatRules, ParsedManuscript } from '../types'
 
 /**
  * FormatComplianceAgent — ReAct over a deterministic core.
@@ -56,6 +57,12 @@ export async function runFormatComplianceAgent(input: FormatInput): Promise<Form
   const { checks, leaks, ambiguous } = runFormatChecks(manuscript, rules)
   const mechanical = applyMechanicalFixes(manuscript, rules)
 
+  // ── Citation style ─────────────────────────────────────────────────────────
+  // The venue decides the style, so a mismatch gets converted rather than only
+  // reported. Both directions run in code — see lib/citations.ts.
+  const citations = await convertCitations(mechanical.text, manuscript, rules)
+  if (citations.note) mechanical.applied.push(citations.note)
+
   const findings = checks.filter((c) => c.status === 'fail' || c.status === 'warn')
   const unknowns = checks.filter((c) => c.status === 'unknown')
 
@@ -71,7 +78,7 @@ export async function runFormatComplianceAgent(input: FormatInput): Promise<Form
     )
     return {
       report: { venue: profile.venue, checklist: checks, mechanical_fixes: mechanical.applied, looked_up: [] },
-      mechanicallyFixed: mechanical.text,
+      mechanicallyFixed: citations.text,
       leaks,
     }
   }
@@ -159,11 +166,33 @@ export async function runFormatComplianceAgent(input: FormatInput): Promise<Form
       mechanical_fixes: mechanical.applied,
       looked_up: lookedUp,
     },
-    mechanicallyFixed: mechanical.text,
+    mechanicallyFixed: citations.text,
     leaks,
   }
 }
 
 function isStatus(s: string): s is CheckStatus {
   return s === 'pass' || s === 'fail' || s === 'warn' || s === 'unknown'
+}
+
+/**
+ * Brings the manuscript's citation commands into the venue's style.
+ *
+ * Runs only for LaTeX (in plain prose there is no command to rewrite, and
+ * renumbering bracketed references by hand is not something to attempt blind),
+ * and only when the venue states a style the manuscript does not already use.
+ */
+async function convertCitations(
+  text: string,
+  manuscript: ParsedManuscript,
+  rules: FormatRules,
+): Promise<ConversionResult> {
+  const none: ConversionResult = { text, changed: 0, note: null }
+  // Only LaTeX: in plain prose there is no command to rewrite, and renumbering
+  // bracketed references blind is not something to attempt.
+  if (manuscript.format !== 'latex') return none
+  if (rules.citation_style === 'unknown') return none
+  if (manuscript.in_text_style === rules.citation_style) return none
+
+  return rules.citation_style === 'numeric' ? convertToNumeric(text) : convertToAuthorYear(text)
 }
