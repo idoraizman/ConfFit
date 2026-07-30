@@ -1,4 +1,4 @@
-# ConfFit — Agentic System for Academic Conference Submission
+# ConfFit - Agentic System for Academic Conference Submission
 
 An author-facing agent that adapts a research paper to a target academic conference: it
 re-frames the contribution for that venue and checks the manuscript against the venue's
@@ -16,7 +16,7 @@ Course project · Itay Krausz, Ido Raizman, Roi Teichman
 
 The same core research goes to many venues. Each rejection cycle burns weeks on
 re-positioning rather than science, because every venue has (a) a different focus and a
-different sense of what a good paper looks like, and (b) different formatting rules —
+different sense of what a good paper looks like, and (b) different formatting rules -
 template, citation style, page limits, double-blind anonymity.
 
 ConfFit does both passes in one run, grounded in the venue's own Call-for-Papers.
@@ -47,7 +47,7 @@ POST /api/execute { prompt }
 ```
 
 `Supervisor · ConferenceProfiler · FramingAgent · FramingReflect · FormatComplianceAgent ·
-UnifiedFixer` — these six names are declared once in [`lib/modules.ts`](lib/modules.ts) and
+UnifiedFixer` - these six names are declared once in [`lib/modules.ts`](lib/modules.ts) and
 consumed by the diagram renderer, `/api/agent_info` and every `steps` entry, so the three
 surfaces cannot drift apart. `scripts/render_architecture.py` fails the render if a box
 label and `lib/modules.ts` disagree.
@@ -60,7 +60,7 @@ label and `lib/modules.ts` disagree.
 | Plan-and-Execute | Its strength is re-planning one evolving task. Here the two tasks are known up front, so a planner is pure overhead. |
 
 **Chosen: Supervisor.** It makes one runtime routing decision (which venue, which workers)
-and one merge — that runtime choice is what makes this an agent rather than a fixed
+and one merge - that runtime choice is what makes this an agent rather than a fixed
 pipeline. Framing uses **Reflection** because re-positioning is a judgement task with no
 single right answer; format uses **ReAct** because rule checking is mostly deterministic and
 only needs a tool when a rule is genuinely unclear.
@@ -74,78 +74,78 @@ required:
   detecting citation style, and scanning for anonymity leaks all run in `lib/manuscript.ts`
   and `lib/checks.ts`.
 - **A cached venue costs nothing.** `ConferenceProfiler` returns a cached profile with zero
-  LLM calls. Eight major venues ship pre-seeded — but only for the edition their rules were
+  LLM calls. Eight major venues ship pre-seeded - but only for the edition their rules were
   read from (see below), so the free path is a hit rather than a guess.
 - **The router never sees the manuscript.** `parsePrompt` extracts the template fields in
   code and hands the routing call a short header.
 - **Each worker gets only its slice.** `FramingAgent` sees the title, abstract, contributions
-  and introduction opening — never the whole paper. `UnifiedFixer` sees only the spans it may
+  and introduction opening - never the whole paper. `UnifiedFixer` sees only the spans it may
   edit and returns targeted edits, which code splices in.
 - **Calls are skipped when they would say nothing.** `FormatComplianceAgent` makes no LLM call
   at all if every rule passes and none is ambiguous; the reflection critic is not re-run when
   no further revision is affordable.
 - **Structure recovery is a fallback, not a pass.** Asking the model to read the manuscript's
   shape on every run would cost ~10k prompt tokens and, worse, make a *checking* tool
-  non-deterministic — the same paper could report a different page count twice. Code parses
+  non-deterministic - the same paper could report a different page count twice. Code parses
   LaTeX, markdown and numbered headings; the model is only asked when that finds nothing, and
   it returns verbatim anchors that code locates, so edit offsets stay exact.
 - **The reflection loop is capped** at N ≤ 2 in code, not by prompt instruction.
 - **Citation conversion is deterministic.** Choosing `\citet` vs `\citep` was tried as a
   model call and measured: it misread the common "named system, then citation" pattern often
   enough to emit ungrammatical text (`Marble Cheng et al. (2025) performs ...`). A rule that
-  claims `\citet` only on two high-precision signals — the citation opens the clause and is
-  followed by a verb, or it follows a construction needing a noun — is both safer and free.
+  claims `\citet` only on two high-precision signals - the citation opens the clause and is
+  followed by a verb, or it follows a construction needing a noun - is both safer and free.
 
-A full `both` run on a cached venue is typically **6 LLM calls**; the worst case — ingesting a
-new venue — is **9**. Every response ends with the exact call and token count for that run.
+A full `both` run on a cached venue is typically **6 LLM calls**; the worst case - ingesting a
+new venue - is **9**. Every response ends with the exact call and token count for that run.
 
 ## Human-in-the-loop RAG
 
 Two gates, and ConfFit never crosses either one on its own: it does not choose the document
 its rules come from, and it does not decide what to remember.
 
-**Gate 1 — where the rules come from.** A venue that is not in the knowledge base stops the
+**Gate 1 - where the rules come from.** A venue that is not in the knowledge base stops the
 run. `/api/execute` returns a normal `status:"ok"` whose `response` asks for the source, and
 the trace shows `ConferenceProfiler` reporting `cache_hit: false`, `searched_the_web: false`,
 `wrote_to_knowledge_base: false`. The author answers with any of:
 
 | Reply | What happens |
 | --- | --- |
-| a link | Fetched and read. HTML or PDF — the text layer of a PDF is extracted server-side. |
+| a link | Fetched and read. HTML or PDF - the text layer of a PDF is extracted server-side. |
 | attached files | Up to 5 PDFs or text files, 3 MB total, sent as `files: [{name, data}]` (base64). |
 | pasted text | Used verbatim. Nothing is fetched at all. |
 | `yes` | Only when the author gave a URL as the venue; reads that. |
 
 Earlier versions searched the web here and offered what they found. That was removed after
-measuring it against the deployed app rather than a laptop: DuckDuckGo — which does return the
-right page — is blocked from Vercel's IPs, and Bing's RSS view, the only endpoint that answers
+measuring it against the deployed app rather than a laptop: DuckDuckGo - which does return the
+right page - is blocked from Vercel's IPs, and Bing's RSS view, the only endpoint that answers
 there, entity-matches instead of searching. It returned genealogy forums and a supermarket for
 "SIGGRAPH 2027 author guidelines", pizza delivery for a Eurographics query, and on a good day
-the *parent* conference's rules for a sub-conference — plausible, authoritative-looking and
+the *parent* conference's rules for a sub-conference - plausible, authoritative-looking and
 wrong. A wrong page produces a confident profile, and no amount of ranking fixes a search that
 cannot reach the web. The author knows which document governs their submission; asking costs
 one turn and is always right.
 
-**Gate 2 — whether to remember it.** The rules are read, used for that run, and shown in the
+**Gate 2 - whether to remember it.** The rules are read, used for that run, and shown in the
 report. Only then does the answer ask whether to keep them, so the decision is made against
 visible consequences rather than a promise. Until the author says yes, nothing has been
 written: the extracted profile and its source text wait in the pending row, which is why
-answering costs **zero LLM calls** — saving writes exactly what was displayed, and it cannot
+answering costs **zero LLM calls** - saving writes exactly what was displayed, and it cannot
 come back different the second time.
 
 `yes` stores the profile and indexes its passages for retrieval; `no` leaves the knowledge base
 untouched and the venue is asked about again next time. Both answers are recognised in code.
 
 **Baselines are edition-scoped.** Eight venue families ship with built-in rules, each stamped
-with the edition it was read from — currently 2026. Asking about ICML 2026 is answered from
+with the edition it was read from - currently 2026. Asking about ICML 2026 is answered from
 that baseline for free; asking about ICML **2027** is not, because page limits and anonymity
 policies change between editions and answering the 2027 request with 2026's rules under the
 2027 name is exactly the confident-but-wrong failure the gates exist to prevent. So an
 uncovered year reaches gate 1, which offers the baseline as one of the choices:
 
 ```
-- yes — read <the link you gave with the venue>
-- baseline — use the built-in ICML rules from 2026 as they stand, and I will say so
+- yes - read <the link you gave with the venue>
+- baseline - use the built-in ICML rules from 2026 as they stand, and I will say so
 - attach the guidelines, or paste them in
 ```
 
@@ -154,8 +154,8 @@ still goes through gate 2 before anything is stored.
 
 Two rules make the readings trustworthy rather than merely present:
 
-- **A source that states no rule is not a profile.** If nothing resolves — no page limit,
-  anonymity policy, template, citation style, abstract limit or required section — the read is
+- **A source that states no rule is not a profile.** If nothing resolves - no page limit,
+  anonymity policy, template, citation style, abstract limit or required section - the read is
   reported as failed and gate 1 stays open. Caching a profile whose every field is unknown
   would serve it from the cache forever with no gate left to correct it.
 - **Long sources are filtered, not truncated.** One five-page formatting-instructions PDF
@@ -183,22 +183,22 @@ Paper: <paste the manuscript text, or title + abstract + contributions + section
 Notes: <optional, e.g. "rejected from NeurIPS for being too applied">
 ```
 
-Free-form prompts work too — the Supervisor's routing call fills in whatever the template
+Free-form prompts work too - the Supervisor's routing call fills in whatever the template
 does not.
 
 ### Input formats
 
 Paste the manuscript, or drop a `.txt` / `.md` / `.tex` file onto the composer in the web UI
-(the browser reads it and fills the `Paper:` field — the API contract stays `{"prompt": "..."}`).
+(the browser reads it and fills the `Paper:` field - the API contract stays `{"prompt": "..."}`).
 
 | Input | Handling |
 | --- | --- |
-| **LaTeX source** | Preamble checked against the venue template (style package, `\bibliographystyle`, forbidden layout overrides, de-anonymising options) and fixed in place. Citation commands are converted to the venue's required style. Parsed natively: `\section`, `\subsection`, `\begin{abstract}`, `\title`, `\author`, `\thanks`, `\bibliographystyle` and `\cite`. Word counts exclude markup, maths and floats. The revision is returned as compilable LaTeX — macros, citations and equations survive untouched, anonymisation rewrites `\author{...}` in place, and a required section is inserted as `\section*{...}` before the bibliography. |
+| **LaTeX source** | Preamble checked against the venue template (style package, `\bibliographystyle`, forbidden layout overrides, de-anonymising options) and fixed in place. Citation commands are converted to the venue's required style. Parsed natively: `\section`, `\subsection`, `\begin{abstract}`, `\title`, `\author`, `\thanks`, `\bibliographystyle` and `\cite`. Word counts exclude markup, maths and floats. The revision is returned as compilable LaTeX - macros, citations and equations survive untouched, anonymisation rewrites `\author{...}` in place, and a required section is inserted as `\section*{...}` before the bibliography. |
 | **Markdown / plain text** | `#` headings, `1. Introduction`, and ALL-CAPS headings. |
 | **Text copied out of a PDF** | Usually parses fine, since rendered headings survive the copy. If they do not, the Supervisor spends one call to recover the structure and says so in the response. |
 | **PDF / .docx** | Not accepted. Programmatic extraction mangles two-column layouts badly enough to corrupt section parsing; copying the text out of a viewer gives much cleaner input. |
 
-Paste `references.bib` alongside a `.tex` if you want the reference list checked —
+Paste `references.bib` alongside a `.tex` if you want the reference list checked -
 `\bibliography{references}` points at a file the agent cannot open.
 
 ## Running locally
@@ -244,8 +244,8 @@ npm run dev                       # with a real LLMOD_API_KEY
 node scripts/capture-examples.mjs
 ```
 
-Captures three real runs — a cached-venue `both` run, a `format`-only run that shows routing
-skipping `FramingAgent`, and the human-in-the-loop gate — into `lib/agent-examples.json`. It
+Captures three real runs - a cached-venue `both` run, a `format`-only run that shows routing
+skipping `FramingAgent`, and the human-in-the-loop gate - into `lib/agent-examples.json`. It
 refuses to write mock output.
 
 ## Deployment
@@ -277,10 +277,10 @@ report says so on every run.
 
 ```
 app/
-  page.tsx                 GUI — prompt, Run Agent, response, full steps trace
+  page.tsx                 GUI - prompt, Run Agent, response, full steps trace
   api/{team_info,agent_info,model_architecture,execute}/route.ts
 lib/
-  modules.ts               the six module names — single source of truth
+  modules.ts               the six module names - single source of truth
   agents/                  supervisor · profiler · framing · format · fixer
   manuscript.ts            deterministic parsing and per-agent context slices
   checks.ts                deterministic rule checks
