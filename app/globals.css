@@ -583,6 +583,35 @@ button.ghost:hover:not(:disabled) {
   display: none;
 }
 
+/*
+ * A row that expands has to look like one. A down chevron says "this opens
+ * downwards"; it flips up once the step is open, the usual accordion signal.
+ */
+.step > summary::after {
+  content: "";
+  margin-left: auto;
+  align-self: center;
+  /* Drawn rather than typed: the ▾ glyph renders too small and soft at this size
+     to read as a control. */
+  width: 9px;
+  height: 9px;
+  margin-right: 4px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translate(-2px, -2px);
+  color: var(--muted);
+  transition: transform 0.15s ease, color 0.15s ease;
+}
+
+.step[open] > summary::after {
+  transform: rotate(225deg) translate(-2px, -2px);
+  color: var(--accent);
+}
+
+.step > summary:hover::after {
+  color: var(--accent);
+}
+
 .step .idx {
   font: 600 11px/1.6 var(--mono);
   color: var(--muted);
