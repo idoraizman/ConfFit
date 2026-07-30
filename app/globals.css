@@ -593,24 +593,26 @@ button.ghost:hover:not(:disabled) {
   align-self: center;
   /* Drawn rather than typed: the ▾ glyph renders too small and soft at this size
      to read as a control. */
-  width: 9px;
-  height: 9px;
-  margin-right: 4px;
-  border-right: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
+  width: 11px;
+  height: 11px;
+  margin-right: 6px;
+  border-right: 2.5px solid currentColor;
+  border-bottom: 2.5px solid currentColor;
+  border-radius: 2px;
   transform: rotate(45deg) translate(-2px, -2px);
-  color: var(--muted);
+  color: var(--accent);
   transition: transform 0.15s ease, color 0.15s ease;
 }
 
 .step[open] > summary::after {
   transform: rotate(225deg) translate(-2px, -2px);
-  color: var(--accent);
 }
 
-.step > summary:hover::after {
-  color: var(--accent);
+/* The whole row is the control, so the whole row reacts to the pointer. */
+.step > summary:hover {
+  background: var(--accent-soft);
 }
+
 
 .step .idx {
   font: 600 11px/1.6 var(--mono);
