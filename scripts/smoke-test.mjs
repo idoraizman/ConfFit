@@ -135,7 +135,7 @@ async function main() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        prompt: `Target conference: ICLR 2027\nTask: both\nPaper: ${paper}`,
+        prompt: `Target conference: ICLR 2026\nTask: both\nPaper: ${paper}`,
         session_id: `smoke-${Date.now()}`,
       }),
     })
@@ -157,7 +157,24 @@ async function main() {
       (body.steps ?? []).map((s) => s.module).join(' → '))
     check('run finished well inside the 300s Vercel ceiling', Number(secs) < 240, `${secs}s`)
 
-    console.log('\nPOST /api/execute (unknown venue — human-in-the-loop gate)')
+    console.log('\nPOST /api/execute (a year the baselines do not cover)')
+    const wrongYear = await (
+      await fetch(`${base}/api/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: `Target conference: ICLR 2031\nTask: format\nPaper: ${paper.slice(0, 800)}`,
+          session_id: `smoke-year-${Date.now()}`,
+        }),
+      })
+    ).json()
+    check('a seeded family in an uncovered year does not run from the baseline',
+      /do not go looking/.test(wrongYear.response ?? ''), (wrongYear.response ?? '').slice(0, 120))
+    check('the baseline is offered explicitly instead',
+      /`baseline`/.test(wrongYear.response ?? '') &&
+        (wrongYear.steps ?? []).some((s) => typeof s.response?.baseline_available === 'string'))
+
+  console.log('\nPOST /api/execute (unknown venue — human-in-the-loop gate)')
     const session = `smoke-hitl-${Date.now()}`
     const gate = await (
       await fetch(`${base}/api/execute`, {

@@ -3,9 +3,11 @@ import { MODULES } from '../modules'
 import {
   SEED_AS_OF,
   guessCfpUrl,
+  guideUrlHint,
   profileFromSeed,
   resolveVenue,
   seedCorpus,
+  seedFor,
   type ResolvedVenue,
 } from '../seed/venues'
 import type { Store } from '../store'
@@ -42,6 +44,8 @@ export interface ProfilerInput {
   providedGuidelines: string | null
   /** How to describe that source in the answer, e.g. "2 uploaded files: a.pdf, b.pdf". */
   providedGuidelinesLabel: string | null
+  /** The author answered the gate with `baseline`: use the built-in rules as-is. */
+  useBaseline: boolean
   originalPrompt: string
   task: Task
 }
@@ -102,6 +106,33 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
       display: pending.venue,
       family: resolveVenue(pending.venue).family,
       year: null,
+    }
+
+    // The author chose the built-in baseline for another edition, knowing what it
+    // is. Deterministic and free — no fetch, no synthesis call.
+    if (input.useBaseline) {
+      const forced = profileFromSeed(pendingVenue, true)
+      if (!forced) {
+        return {
+          kind: 'declined',
+          message: `I have no built-in baseline for **${pending.venue}**, so there is nothing to fall back on. Send a link, attach the guidelines, or paste the rules.`,
+        }
+      }
+      const seed = seedFor(pendingVenue.family)
+      const profile: ConferenceProfile = {
+        ...forced,
+        source_note: `built-in ${seed?.display ?? pendingVenue.display} baseline from the ${seed?.rules_year} edition, used for ${pending.venue} at your request`,
+      }
+      tracer.addDeterministic(
+        MODULES.PROFILER,
+        {
+          system:
+            'The author accepted the built-in baseline for a different edition. It is used as-is; no source is fetched and no rule is invented.',
+          user: `Use the ${seed?.display} ${seed?.rules_year} baseline for ${pending.venue}.`,
+        },
+        { gate: 'source', decision: 'baseline', venue: pending.venue, baseline_year: seed?.rules_year, profile },
+      )
+      return finishWithSaveGate(input, pending, profile, (seedCorpus(pendingVenue) ?? []).map((c) => c.text).join('\n\n'))
     }
 
     // The author pasted the rules themselves. This is the path that always
@@ -215,6 +246,15 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
    * governs their submission.
    */
   const proposed = input.providedUrl ?? guessCfpUrl(resolved, input.venueRaw)
+  /*
+   * A built-in baseline for this family exists but was read from a different
+   * edition. It is offered, never assumed: page limits and anonymity policies
+   * change between editions, and answering a 2027 request with 2026's rules
+   * under the 2027 name is the confident-but-wrong failure this gate exists to
+   * prevent.
+   */
+  const otherEdition = resolved.family ? seedFor(resolved.family) : null
+  const hint = guideUrlHint(resolved.family, resolved.year)
 
   await store.putPending({
     session_id: sessionId,
@@ -230,10 +270,18 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
   const question = [
     `I don't have guidelines for **${resolved.display}** in the knowledge base, and I do not go looking for them on the web — a page I picked myself could be the wrong venue, the wrong year or the wrong track, and you would get confident rules from it either way.`,
     '',
+    otherEdition
+      ? `I do have built-in **${otherEdition.display}** rules, but they were read from the ${otherEdition.rules_year} edition, and page limits and anonymity policies change between editions — so I will not answer for ${resolved.display} with them unless you tell me to.`
+      : '',
+    hint ? `${resolved.display} usually publishes its rules at ${hint} — paste that link if the page is up.` : '',
+    '',
     `**Send me the source in the box below** — any one of:`,
     '',
     ...[
       proposed ? `- \`yes\` — read ${proposed}, the link you gave with the venue` : '',
+      otherEdition
+        ? `- \`baseline\` — use the built-in ${otherEdition.display} rules from ${otherEdition.rules_year} as they stand, and I will say so in the report`
+        : '',
       proposed
         ? "- a different link to the venue's call-for-papers or author-instructions page"
         : "- a link to the venue's call-for-papers or author-instructions page (HTML or PDF)",
@@ -259,6 +307,8 @@ export async function runConferenceProfiler(input: ProfilerInput): Promise<Profi
       searched_the_web: false,
       venue: resolved.display,
       proposed_url: proposed,
+      baseline_available: otherEdition ? `${otherEdition.display} ${otherEdition.rules_year}` : null,
+      guide_url_hint: hint,
       gate: 'source',
       awaiting_reply: true,
       ask_user: question,

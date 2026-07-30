@@ -17,7 +17,7 @@ import {
 import { renderMarkdown } from '@/lib/markdown'
 import type { ExecuteResult, Step } from '@/lib/types'
 
-const TEMPLATE = `Target conference: ICLR 2027
+const TEMPLATE = `Target conference: ICLR 2026
 Task: both
 Paper: <paste your manuscript here — title, author block, abstract, sections, references>
 Notes: <optional, e.g. "rejected from NeurIPS for being too applied">`
@@ -438,6 +438,11 @@ export default function Page() {
                 Yes — read {shortUrl(gate.proposedUrl)}
               </button>
             )}
+            {gate?.baseline && (
+              <button className="ghost approve" onClick={() => void sendReply('baseline')} disabled={busy}>
+                Use the built-in {gate.baseline} rules
+              </button>
+            )}
           </div>
 
           <p className="hint">
@@ -464,6 +469,8 @@ interface Gate {
   kind: 'source' | 'save'
   proposedUrl: string | null
   venue: string | null
+  /** A built-in baseline exists, but for a different edition, e.g. "ICML 2026". */
+  baseline: string | null
 }
 
 /**
@@ -488,12 +495,14 @@ function gateOf(result: ExecuteResult | null): Gate | null {
       proposed_url?: unknown
       venue?: unknown
       gate?: unknown
+      baseline_available?: unknown
     }
     if (typeof r.ask_user === 'string') {
       return {
         kind: 'source',
         proposedUrl: typeof r.proposed_url === 'string' && r.proposed_url ? r.proposed_url : null,
         venue: typeof r.venue === 'string' ? r.venue : null,
+        baseline: typeof r.baseline_available === 'string' ? r.baseline_available : null,
       }
     }
   }
@@ -501,7 +510,7 @@ function gateOf(result: ExecuteResult | null): Gate | null {
   // The run finished and offered to remember the rules it just used.
   if (/^## Add .+ to the knowledge base\?$/m.test(result.response)) {
     const venue = result.response.match(/^## Add (.+) to the knowledge base\?$/m)?.[1] ?? null
-    return { kind: 'save', proposedUrl: null, venue }
+    return { kind: 'save', proposedUrl: null, venue, baseline: null }
   }
   return null
 }

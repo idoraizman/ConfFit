@@ -20,13 +20,13 @@ export const PURPOSE =
 
 export const PROMPT_TEMPLATE = {
   template: [
-    'Target conference: <venue name or CFP URL, e.g. "ICLR 2027">',
+    'Target conference: <venue name or CFP URL, e.g. "ICLR 2026">',
     'Task: <framing | format | both>',
     'Paper: <paste the manuscript text, or at minimum title + abstract + contributions + section headings>',
     'Notes: <optional context, e.g. "rejected from NeurIPS for being too applied">',
   ].join('\n'),
   example: [
-    'Target conference: ICLR 2027',
+    'Target conference: ICLR 2026',
     'Task: both',
     'Paper: Cache-Aware Routing for Mixture-of-Experts Inference',
     '',

@@ -21,12 +21,26 @@ import type { ConferenceProfile, FormatRules, TemplateSpec } from '../types'
  * profiler treats any cached seed profile with a different stamp as a miss, so
  * a correction reaches every venue instead of being masked by the cache.
  */
-export const SEED_AS_OF = '2026-07-29c'
+/*
+ * Version stamp for the built-in baselines. A cached profile carrying an older
+ * stamp is treated as a miss, so corrections here reach venues that were already
+ * cached — including the ones cached before baselines became edition-specific.
+ */
+export const SEED_AS_OF = '2026-07-30'
 
 interface VenueSeed {
   family: string
   display: string
   aliases: string[]
+  /**
+   * The edition these rules were read from.
+   *
+   * A baseline is family-wide, but submission rules are not: page limits and
+   * anonymity policies change between editions. So the year is recorded and the
+   * baseline is only served for that year — asking about ICML 2027 must not
+   * quietly return the rules of ICML 2026 under the 2027 name.
+   */
+  rules_year: number
   cfp_url: string
   /**
    * Author guide / formatting instructions. This is where the concrete rules
@@ -57,6 +71,7 @@ const NO_TEMPLATE_SPEC: TemplateSpec | null = null
 export const VENUE_SEEDS: VenueSeed[] = [
   {
     family: 'iclr',
+    rules_year: 2026,
     display: 'ICLR',
     aliases: ['iclr', 'international conference on learning representations'],
     cfp_url: 'https://iclr.cc/Conferences/2026/CallForPapers',
@@ -124,6 +139,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
   },
   {
     family: 'neurips',
+    rules_year: 2026,
     display: 'NeurIPS',
     aliases: ['neurips', 'nips', 'neural information processing systems'],
     cfp_url: 'https://neurips.cc/Conferences/2026/CallForPapers',
@@ -180,6 +196,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
   },
   {
     family: 'icml',
+    rules_year: 2026,
     display: 'ICML',
     aliases: ['icml', 'international conference on machine learning'],
     cfp_url: 'https://icml.cc/Conferences/2026/CallForPapers',
@@ -224,6 +241,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
   },
   {
     family: 'acl',
+    rules_year: 2026,
     display: 'ACL',
     aliases: ['acl', 'association for computational linguistics', 'acl rolling review', 'arr'],
     cfp_url: 'https://www.aclweb.org/portal/',
@@ -269,6 +287,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
   },
   {
     family: 'emnlp',
+    rules_year: 2026,
     display: 'EMNLP',
     aliases: ['emnlp', 'empirical methods in natural language processing'],
     cfp_url: 'https://www.aclweb.org/portal/',
@@ -311,6 +330,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
   },
   {
     family: 'cvpr',
+    rules_year: 2026,
     display: 'CVPR',
     aliases: ['cvpr', 'computer vision and pattern recognition', 'iccv', 'eccv'],
     cfp_url: 'https://cvpr.thecvf.com/Conferences/2026/AuthorGuidelines',
@@ -355,6 +375,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
   },
   {
     family: 'aaai',
+    rules_year: 2026,
     display: 'AAAI',
     aliases: ['aaai', 'association for the advancement of artificial intelligence'],
     cfp_url: 'https://aaai.org/conference/aaai/',
@@ -398,6 +419,7 @@ export const VENUE_SEEDS: VenueSeed[] = [
   },
   {
     family: 'kdd',
+    rules_year: 2026,
     display: 'KDD',
     aliases: ['kdd', 'sigkdd', 'knowledge discovery and data mining'],
     cfp_url: 'https://kdd.org/',
@@ -480,10 +502,18 @@ export function seedFor(family: string | null): VenueSeed | null {
   return VENUE_SEEDS.find((v) => v.family === family) ?? null
 }
 
-/** Builds a ConferenceProfile from a seed, stamped so its provenance is visible. */
-export function profileFromSeed(resolved: ResolvedVenue): ConferenceProfile | null {
+/**
+ * Builds a ConferenceProfile from a built-in baseline.
+ *
+ * Refuses when the request names a different edition than the baseline was read
+ * from, so a year the rules do not cover reaches the human-in-the-loop gate
+ * instead of being answered from the wrong year's page limit. `force` is the
+ * author overriding that after being told — an explicit choice, not a default.
+ */
+export function profileFromSeed(resolved: ResolvedVenue, force = false): ConferenceProfile | null {
   const seed = seedFor(resolved.family)
   if (!seed) return null
+  if (!force && resolved.year !== null && Number(resolved.year) !== seed.rules_year) return null
   return {
     venue_id: resolved.venue_id,
     venue: resolved.display,
@@ -493,6 +523,7 @@ export function profileFromSeed(resolved: ResolvedVenue): ConferenceProfile | nu
     format_rules: { ...seed.rules, required_sections: [...seed.rules.required_sections], unresolved: [] },
     source: 'seed',
     source_url: seed.guide_url || seed.cfp_url,
+    source_note: `built-in ${seed.display} baseline, rules as read from the ${seed.rules_year} edition`,
     updated_at: SEED_AS_OF,
   }
 }
@@ -516,9 +547,24 @@ export function seedCorpus(resolved: ResolvedVenue): { id: string; text: string;
  * manuscript (a repository link, a dataset link) and propose ingesting that as
  * if it were the venue's call-for-papers.
  */
-export function guessCfpUrl(resolved: ResolvedVenue, venueField: string): string | null {
+/**
+ * A URL to read — but only one the author actually gave.
+ *
+ * This used to fall back to the seed's guide URL, which meant a request for ICML
+ * 2027 was offered the 2026 instructions page as though the author had supplied
+ * it. ConfFit does not choose the document its rules come from; where a baseline
+ * exists, the gate offers the baseline instead, and says which edition it is.
+ */
+export function guessCfpUrl(_resolved: ResolvedVenue, venueField: string): string | null {
   const explicit = venueField.match(/https?:\/\/\S+/)?.[0]
-  if (explicit) return explicit.replace(/[).,]+$/, '')
-  const seed = seedFor(resolved.family)
-  return seed ? seed.guide_url || seed.cfp_url : null
+  return explicit ? explicit.replace(/[).,]+$/, '') : null
+}
+
+/** Where a seeded venue usually publishes the rules — shown as a hint, never fetched. */
+export function guideUrlHint(family: string | null, year: string | null): string | null {
+  const seed = seedFor(family)
+  if (!seed?.guide_url || !year) return null
+  return seed.guide_url.includes(String(seed.rules_year))
+    ? seed.guide_url.replace(String(seed.rules_year), year)
+    : null
 }

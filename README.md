@@ -74,8 +74,8 @@ required:
   detecting citation style, and scanning for anonymity leaks all run in `lib/manuscript.ts`
   and `lib/checks.ts`.
 - **A cached venue costs nothing.** `ConferenceProfiler` returns a cached profile with zero
-  LLM calls. Eight major venues ship pre-seeded, so the common case is a hit on the very
-  first request.
+  LLM calls. Eight major venues ship pre-seeded — but only for the edition their rules were
+  read from (see below), so the free path is a hit rather than a guess.
 - **The router never sees the manuscript.** `parsePrompt` extracts the template fields in
   code and hands the routing call a short header.
 - **Each worker gets only its slice.** `FramingAgent` sees the title, abstract, contributions
@@ -136,6 +136,22 @@ come back different the second time.
 `yes` stores the profile and indexes its passages for retrieval; `no` leaves the knowledge base
 untouched and the venue is asked about again next time. Both answers are recognised in code.
 
+**Baselines are edition-scoped.** Eight venue families ship with built-in rules, each stamped
+with the edition it was read from — currently 2026. Asking about ICML 2026 is answered from
+that baseline for free; asking about ICML **2027** is not, because page limits and anonymity
+policies change between editions and answering the 2027 request with 2026's rules under the
+2027 name is exactly the confident-but-wrong failure the gates exist to prevent. So an
+uncovered year reaches gate 1, which offers the baseline as one of the choices:
+
+```
+- yes — read <the link you gave with the venue>
+- baseline — use the built-in ICML rules from 2026 as they stand, and I will say so
+- attach the guidelines, or paste them in
+```
+
+Answering `baseline` costs nothing, states in the report which edition the rules came from, and
+still goes through gate 2 before anything is stored.
+
 Two rules make the readings trustworthy rather than merely present:
 
 - **A source that states no rule is not a profile.** If nothing resolves — no page limit,
@@ -161,7 +177,7 @@ Two rules make the readings trustworthy rather than merely present:
 ### Prompt template
 
 ```
-Target conference: <venue name or CFP URL, e.g. "ICLR 2027">
+Target conference: <venue name or CFP URL, e.g. "ICLR 2026">
 Task: <framing | format | both>
 Paper: <paste the manuscript text, or title + abstract + contributions + section headings>
 Notes: <optional, e.g. "rejected from NeurIPS for being too applied">

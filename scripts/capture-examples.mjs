@@ -48,7 +48,7 @@ const SCENARIOS = [
   {
     label: 'both — cached venue',
     session: 'capture-both',
-    prompt: `Target conference: ICLR 2027\nTask: both\nPaper: ${paper}\nNotes: we were rejected from NeurIPS for being too systems-focused`,
+    prompt: `Target conference: ICLR 2026\nTask: both\nPaper: ${paper}\nNotes: we were rejected from NeurIPS for being too systems-focused`,
   },
   {
     label: 'format only — routing skips FramingAgent',

@@ -49,6 +49,8 @@ Be concrete and quantitative. Do not repeat the reports verbatim — they are pr
 
 const APPROVAL_RE = /^\s*(y|yes|yep|yeah|ok|okay|sure|go ahead|approved?|do it|please do|confirm(ed)?)\b[\s.!]*$/i
 const URL_ONLY_RE = /^\s*(https?:\/\/\S+)\s*$/i
+/** Accepting the built-in baseline for a different edition, at the source gate. */
+const BASELINE_RE = /^\s*(use\s+(the\s+)?)?baseline\b[\s.!]*$/i
 /** A refusal at the save gate: use the rules for this run, remember nothing. */
 const DECLINE_RE = /^\s*(n|no|nope|nah|don'?t|do not|discard|skip|not now|no thanks?)\b[\s.!]*$/i
 /** An explicit label the author can put in front of pasted submission rules. */
@@ -190,7 +192,8 @@ async function run(
   // ── Route ──────────────────────────────────────────────────────────────────
   // A bare approval needs no model call: the architecture's own trace for this
   // turn starts at ConferenceProfiler.
-  const bareApproval = APPROVAL_RE.test(prompt) || URL_ONLY_RE.test(prompt)
+  const useBaseline = BASELINE_RE.test(prompt)
+  const bareApproval = APPROVAL_RE.test(prompt) || URL_ONLY_RE.test(prompt) || useBaseline
   // An attached file needs no heuristic: choosing it in the gate's own cell says
   // what it is. Bare pasted text is the ambiguous case, and only counts as
   // guidelines when a gate is actually waiting for them.
@@ -216,6 +219,7 @@ async function run(
       },
       {
         is_approval_reply: true,
+        used_baseline: useBaseline,
         provided_url: url,
         provided_guidelines_chars: providedGuidelines?.length ?? 0,
         provided_guidelines_source: providedLabel,
@@ -237,7 +241,7 @@ async function run(
       maxTokens: 250,
       mock: {
         in_scope: true,
-        target_conference: parsed.target_conference ?? 'ICLR 2027',
+        target_conference: parsed.target_conference ?? 'ICLR 2026',
         task: parsed.task ?? 'both',
         is_approval_reply: false,
         provided_url: null,
@@ -317,6 +321,7 @@ async function run(
     providedUrl: route.provided_url,
     providedGuidelines,
     providedGuidelinesLabel: providedLabel,
+    useBaseline,
     originalPrompt: prompt,
     task,
   })
@@ -622,7 +627,7 @@ function cell(s: string): string {
 
 function profileNote(p: ConferenceProfile): string {
   if (p.source === 'seed') {
-    return `_Venue profile: built-in baseline for the ${p.venue} family (as of ${p.updated_at}). Confirm the current rules at ${p.source_url ?? 'the venue site'} before submitting._`
+    return `_Venue profile: ${p.source_note ?? `built-in baseline for the ${p.venue} family`}. Confirm against the current call-for-papers at ${p.source_url ?? 'the venue site'} before submitting._`
   }
   if (p.source === 'ingested') {
     return `_Venue profile: read from ${p.source_url ?? 'the call-for-papers'}._`
@@ -654,7 +659,7 @@ function outOfScope(reason: string | null): string {
     'Send it in this shape instead:',
     '',
     '```',
-    'Target conference: ICLR 2027',
+    'Target conference: ICLR 2026',
     'Task: both',
     'Paper: <paste the manuscript, or the title + abstract + contributions>',
     'Notes: <optional context, e.g. "rejected from NeurIPS for being too applied">',
@@ -671,7 +676,7 @@ function noPendingApproval(): string {
     'That reply is meant to answer a question like _“May I fetch this Call-for-Papers and add it to the knowledge base?”_. Send the full request and I will start from the top:',
     '',
     '```',
-    'Target conference: ICLR 2027',
+    'Target conference: ICLR 2026',
     'Task: both',
     'Paper: <your manuscript>',
     '```',
@@ -685,7 +690,7 @@ function needVenue(): string {
     'Add a target conference and resend:',
     '',
     '```',
-    'Target conference: ICLR 2027',
+    'Target conference: ICLR 2026',
     'Task: both',
     'Paper: <your manuscript>',
     '```',
