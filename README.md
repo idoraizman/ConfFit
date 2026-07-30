@@ -26,7 +26,7 @@ ConfFit does both passes in one run, grounded in the venue's own Call-for-Papers
 A thin **Supervisor** coordinating one Reflection worker and two ReAct workers.
 
 ```
-POST /api/execute { prompt }
+POST /api/execute { prompt, files? }
         │
    Supervisor ──────────── route · monitor · merge          (1 LLM call)
         │ dispatch
@@ -96,8 +96,11 @@ required:
   claims `\citet` only on two high-precision signals - the citation opens the clause and is
   followed by a verb, or it follows a construction needing a noun - is both safer and free.
 
-A full `both` run on a cached venue is typically **6 LLM calls**; the worst case - ingesting a
-new venue - is **9**. Every response ends with the exact call and token count for that run.
+Measured on the committed `/api/agent_info` traces: a `both` run on a cached venue is **7 LLM
+calls**, a `format`-only run is **3**, the first turn for an unknown venue is **1** (the routing
+call, then the gate), reading a source the author supplied and running both workers is **8**, and
+answering the save gate is **0**. The worst case is a link that needs two ReAct steps before its
+rules are found, at **10**. Every response ends with the exact call and token count for that run.
 
 ## Human-in-the-loop RAG
 
@@ -115,6 +118,7 @@ the trace shows `ConferenceProfiler` reporting `cache_hit: false`, `searched_the
 | attached files | Up to 5 PDFs or text files, 3 MB total, sent as `files: [{name, data}]` (base64). |
 | pasted text | Used verbatim. Nothing is fetched at all. |
 | `yes` | Only when the author gave a URL as the venue; reads that. |
+| `baseline` | Only when a built-in baseline exists for that family in another edition - see below. |
 
 Earlier versions searched the web here and offered what they found. That was removed after
 measuring it against the deployed app rather than a laptop: DuckDuckGo - which does return the
@@ -135,6 +139,11 @@ come back different the second time.
 
 `yes` stores the profile and indexes its passages for retrieval; `no` leaves the knowledge base
 untouched and the venue is asked about again next time. Both answers are recognised in code.
+
+The `web_search` tool still exists in the catalogue and the ReAct loop may reach for it *after*
+the author has named a source, when the page they gave turns out not to state a rule. It is
+told to prefer the guide-looking links harvested from that page, because those come from the
+venue itself. What was removed is search choosing the source in the first place.
 
 **Baselines are edition-scoped.** Eight venue families ship with built-in rules, each stamped
 with the edition it was read from - currently 2026. Asking about ICML 2026 is answered from
@@ -196,7 +205,8 @@ Paste the manuscript, or drop a `.txt` / `.md` / `.tex` file onto the composer i
 | **LaTeX source** | Preamble checked against the venue template (style package, `\bibliographystyle`, forbidden layout overrides, de-anonymising options) and fixed in place. Citation commands are converted to the venue's required style. Parsed natively: `\section`, `\subsection`, `\begin{abstract}`, `\title`, `\author`, `\thanks`, `\bibliographystyle` and `\cite`. Word counts exclude markup, maths and floats. The revision is returned as compilable LaTeX - macros, citations and equations survive untouched, anonymisation rewrites `\author{...}` in place, and a required section is inserted as `\section*{...}` before the bibliography. |
 | **Markdown / plain text** | `#` headings, `1. Introduction`, and ALL-CAPS headings. |
 | **Text copied out of a PDF** | Usually parses fine, since rendered headings survive the copy. If they do not, the Supervisor spends one call to recover the structure and says so in the response. |
-| **PDF / .docx** | Not accepted. Programmatic extraction mangles two-column layouts badly enough to corrupt section parsing; copying the text out of a viewer gives much cleaner input. |
+| **PDF / .docx as the manuscript** | Not accepted. Programmatic extraction mangles two-column layouts badly enough to corrupt section parsing; copying the text out of a viewer gives much cleaner input. |
+| **PDF as the venue's guidelines** | Accepted, and often the only form the rules exist in. Attach it at gate 1 and the text layer is extracted server-side; a scanned PDF is reported as having no text rather than as empty. Column mangling matters far less here, since what is read is prose about page limits rather than a structure to parse. |
 
 Paste `references.bib` alongside a `.tex` if you want the reference list checked -
 `\bibliography{references}` points at a file the agent cannot open.
@@ -209,15 +219,17 @@ cp .env.example .env          # fill in LLMOD_API_KEY at minimum
 npm run dev                   # http://localhost:3000
 ```
 
-Without any credentials the app still runs: `MOCK_LLM` engages automatically when
-`LLMOD_API_KEY` is empty, Supabase falls back to an in-process store, and Pinecone falls back
-to an in-process cosine search. That is enough to exercise every code path for free.
+Without any credentials the app still runs in development: `MOCK_LLM` engages automatically
+when `LLMOD_API_KEY` is empty, Supabase falls back to an in-process store, and Pinecone falls
+back to an in-process cosine search. That is enough to exercise every code path for free. In
+production a missing key is an error instead - serving mock text from the deployed app would
+look like a working agent.
 
 ### Tests
 
 ```bash
 npm test                                   # contract test against localhost:3000
-npm run test:live                          # …plus two full agent runs
+npm run test:live                          # …plus full agent runs and both gates
 node scripts/smoke-test.mjs https://… --live   # against the deployed app
 ```
 
@@ -225,6 +237,14 @@ The contract test asserts the exact response shapes the specification requires: 
 endpoints, the `status/error/response/steps` top-level keys, every `steps` entry's module
 name against `lib/modules.ts`, both prompt-key spellings, the PNG magic bytes, and that the
 GUI loads without an auth redirect.
+
+`--live` adds the behaviour that is easy to break silently: a cached-venue run reaching every
+module, a `format`-only run skipping `FramingAgent`, an unknown venue stopping at gate 1
+without searching or writing, a seeded family in an uncovered year refusing to answer from the
+baseline, an attached guidelines file answering the gate, the save gate offering to store what
+it read while having written nothing, declining it writing nothing at zero token cost, and an
+unreadable attachment saying so instead of complaining about a missing venue. 254 checks in
+total against a mock-mode server; all of them are free except the two full runs.
 
 ### Regenerating the diagram
 
@@ -244,14 +264,25 @@ npm run dev                       # with a real LLMOD_API_KEY
 node scripts/capture-examples.mjs
 ```
 
-Captures three real runs - a cached-venue `both` run, a `format`-only run that shows routing
-skipping `FramingAgent`, and the human-in-the-loop gate - into `lib/agent-examples.json`. It
-refuses to write mock output.
+Captures five real runs - a cached-venue `both` run, a `format`-only run that shows routing
+skipping `FramingAgent`, gate 1 for an unknown venue, gate 1 answered with pasted guidelines,
+and gate 2 answered - into `lib/agent-examples.json`. It refuses to write mock output.
+
+The last two use a deliberately fictional venue, because that example has to write a profile
+and invented rules stored under a real venue's name would be read as fact by every later run.
+Since it writes one, re-running needs that row cleared first; the script says so and prints the
+`delete` statement when it detects a cache hit where it expected the gate.
 
 ## Deployment
 
 Deployed on Vercel. All routes run on the Node.js runtime; `/api/execute` declares
 `maxDuration = 300` to match the platform ceiling, though a real run finishes far inside it.
+
+`next.config.ts` keeps the Pinecone SDK and pdf.js out of the bundle (`serverExternalPackages`)
+and names `pdf.worker.mjs` in `outputFileTracingIncludes`. pdf.js loads that worker by path at
+runtime, so nothing references it statically and file tracing leaves it out - which made every
+guidelines upload fail on the deployed app while working locally, where `node_modules` is
+simply present.
 
 Environment variables to set in the Vercel project:
 
@@ -281,10 +312,11 @@ app/
   api/{team_info,agent_info,model_architecture,execute}/route.ts
 lib/
   modules.ts               the six module names - single source of truth
-  agents/                  supervisor · profiler · framing · format · fixer
+  agents/                  supervisor · profiler · framing · format · fixer · structure
   manuscript.ts            deterministic parsing and per-agent context slices
   checks.ts                deterministic rule checks
   mechanical.ts            mechanical fixes and edit splicing
+  guidelines.ts            PDF text extraction and rule-passage selection
   llm.ts                   LLMod.ai client (dialect fallback, retries, usage)
   trace.ts                 the steps[] recorder
   store/                   Supabase + Pinecone with in-memory fallbacks
