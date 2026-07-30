@@ -305,10 +305,6 @@ export default function Page() {
           {gate?.kind === 'source' ? (
             <>
               <h2 className="gatetitle">Guidelines needed for {gate.venue ?? 'this venue'}</h2>
-              <p className="gatenote">
-                ConfFit does not search the web for a venue&rsquo;s rules — a page it picked itself could be the wrong
-                venue, year or track, and the rules would look just as authoritative. Give it the real source:
-              </p>
 
               <div className="gategrid">
                 <div className="gatefield">
